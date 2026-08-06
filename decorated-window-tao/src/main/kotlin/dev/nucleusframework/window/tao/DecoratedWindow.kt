@@ -256,6 +256,8 @@ internal fun ApplicationScope.openDecoratedWindow(
     // policy, app-wide; Windows: WS_EX_TOOLWINDOW, per-window; Linux: GTK
     // skip-taskbar/skip-pager hints, per-window, X11/XWayland only).
     hiddenFromDock: Boolean = false,
+    // macOS-only creation-time EDR swapchain. Ignored by Win/Linux dispatch.
+    macOSExtendedDynamicRange: Boolean = false,
     // Parent composition locals to bridge into this window's own ComposeScene
     // (applied above the scene's LocalComposeSceneContext so popups still route
     // into THIS scene). Used by DecoratedDialog so a dialog's content sees the
@@ -385,6 +387,7 @@ internal fun ApplicationScope.openDecoratedWindow(
             macOSStyle = macOSStyle,
             hiddenFromDock = hiddenFromDock,
             fullyTransparent = transparent,
+            extendedDynamicRange = macOSExtendedDynamicRange,
         )
     host.nativePopupLayers = nativePopupLayers
     host.previewKeyHandler = onPreviewKeyEvent

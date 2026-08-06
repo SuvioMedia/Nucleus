@@ -97,6 +97,10 @@ internal class TaoComposeSceneHost(
     // Full-window per-pixel transparency (#416). Creation-time; pairs with
     // tao `with_transparent` so alpha-0 Skia clears show the desktop.
     private val fullyTransparent: Boolean = false,
+    // Creation-time macOS EDR output mode. Keeping one CAMetalLayer format for
+    // the attachment lifetime avoids drawable/pixel-format races during resize
+    // and native fullscreen transitions.
+    private val extendedDynamicRange: Boolean = false,
 ) : AbstractTaoComposeSceneHost() {
     val titleBarHeightDpState: androidx.compose.runtime.MutableState<Float> =
         androidx.compose.runtime.mutableStateOf(0f)
@@ -277,7 +281,7 @@ internal class TaoComposeSceneHost(
             NativeTaoMacOsDecoBridge.nativeSetHiddenFromDock(true)
         }
 
-        val handle = NativeMetalBridge.nativeAttach(nsView)
+        val handle = NativeMetalBridge.nativeAttach(nsView, extendedDynamicRange)
         require(handle != 0L) { "Failed to attach CAMetalLayer to NSView" }
         attachmentHandle = handle
 
@@ -310,6 +314,9 @@ internal class TaoComposeSceneHost(
         // NativeMetalBridge.onFullscreenPrepare and #327.
         NativeMetalBridge.setFullscreenPrepare(nsViewHandle) { targetW, targetH ->
             prepareFullscreenFrame(targetW, targetH)
+        }
+        NativeMetalBridge.setFullscreenTransition(nsViewHandle) { fullscreen, completed ->
+            window.dispatchFullscreenTransition(fullscreen, completed)
         }
 
         // CRITICAL: provide our own MonotonicFrameClock (BroadcastFrameClock)
@@ -730,6 +737,10 @@ internal class TaoComposeSceneHost(
             override fun scheduleInterop(action: () -> Unit) {
                 outer.scheduleInteropAction(action)
             }
+
+            override fun scheduleInteropPreparation(action: () -> Unit) {
+                outer.scheduleInteropPreparationAction(action)
+            }
         }
     }
 
@@ -741,6 +752,16 @@ internal class TaoComposeSceneHost(
      */
     internal fun scheduleInteropAction(action: TaoInteropAction) {
         transaction.add(action)
+        window.requestRedraw()
+    }
+
+    /**
+     * Enqueues Compose-side interop state that has to be applied before the matching frame is
+     * recorded. This is deliberately separate from AppKit mutations, which stay in the atomic
+     * present transaction.
+     */
+    internal fun scheduleInteropPreparationAction(action: TaoInteropAction) {
+        transaction.addPreparation(action)
         window.requestRedraw()
     }
 
@@ -802,9 +823,11 @@ internal class TaoComposeSceneHost(
      */
     fun metalTextureHost(): TaoMetalTextureHost? {
         val outer = this
-        return metalTextureHostCache.get(attachmentHandle, directContext) { device, ctx ->
+        return metalTextureHostCache.get(attachmentHandle, directContext) { device, commandQueue, nativeView, ctx ->
             object : TaoMetalTextureHost {
                 override val metalDevicePtr: Long = device
+                override val metalCommandQueuePtr: Long = commandQueue
+                override val nativeViewPtr: Long = nativeView
                 override val directContext: DirectContext = ctx
 
                 override fun <T> runOnRenderThread(block: () -> T): T = outer.runOnRenderThread(block)
@@ -1249,6 +1272,10 @@ internal class TaoComposeSceneHost(
 
         // ── interop transaction snapshot (main) ──
         val tx = retrieveTransaction()
+        // A NativeView layout callback queued these preparations while recording the previous
+        // frame. Apply them before this frame is recorded so sibling overlay scenes use the same
+        // viewport that the native NSView/CAMetalLayer will receive at presentation time.
+        tx.prepare()
         val needsTransaction =
             tx.actions.isNotEmpty() || rendererIsInteropActive != tx.isInteropActive
         if (needsTransaction != layerPresentsWithTransaction && attachmentHandle != 0L) {
@@ -1275,11 +1302,19 @@ internal class TaoComposeSceneHost(
         withContext(renderDispatcher) {
             try {
                 mainPresented =
-                    replayPictureToFrame(handle, ctx, mainPicture, mainClear) { h, d ->
+                    replayPictureToFrame(
+                        handle,
+                        ctx,
+                        mainPicture,
+                        mainClear,
+                        extendedDynamicRange,
+                    ) { h, d ->
                         if (needsTransaction) {
                             // nativePresentWithInterop hops to the main queue
                             // internally for the CATransaction + AppKit mutations;
                             // the Runnable below therefore runs on the main thread.
+                            // During an AppKit fullscreen transition that hop is
+                            // asynchronous to avoid a main -> render -> main cycle.
                             NativeMetalBridge.nativePresentWithInterop(
                                 h,
                                 d,
@@ -1340,7 +1375,7 @@ internal class TaoComposeSceneHost(
                         s.directContext,
                         s.picture,
                         s.clearColor,
-                        s.present,
+                        present = s.present,
                     )
                 }
             } finally {
@@ -1366,7 +1401,13 @@ internal class TaoComposeSceneHost(
         val handle = attachmentHandle
         runOnRenderThread {
             try {
-                replayPictureToFrame(handle, ctx, mainPicture, mainClear)
+                replayPictureToFrame(
+                    handle,
+                    ctx,
+                    mainPicture,
+                    mainClear,
+                    extendedDynamicRange,
+                )
             } finally {
                 mainPicture.close()
             }
@@ -1379,6 +1420,7 @@ internal class TaoComposeSceneHost(
         // Drop the transition hook before the scene goes: a late
         // willEnterFS would otherwise re-enter a torn-down host.
         NativeMetalBridge.setFullscreenPrepare(nsViewHandle, null)
+        NativeMetalBridge.setFullscreenTransition(nsViewHandle, null)
         // Stop driving frames first: after this no new replay is submitted.
         frameDispatcher?.cancel()
         frameDispatcher = null

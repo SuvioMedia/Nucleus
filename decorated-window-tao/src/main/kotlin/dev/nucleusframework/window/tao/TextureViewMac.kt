@@ -12,6 +12,7 @@ import dev.nucleusframework.core.runtime.Platform
 import dev.nucleusframework.window.tao.ffi.NativeTaoMacOsTextureBridge
 import dev.nucleusframework.window.tao.scene.LocalTaoMetalTextureHost
 import dev.nucleusframework.window.tao.scene.TaoMetalTextureHost
+import dev.nucleusframework.window.tao.scene.skikoRgbaF16SurfaceColorFormat
 import org.jetbrains.skia.BackendRenderTarget
 import org.jetbrains.skia.ColorSpace
 import org.jetbrains.skia.ContentChangeMode
@@ -20,6 +21,50 @@ import org.jetbrains.skia.Rect
 import org.jetbrains.skia.Surface
 import org.jetbrains.skia.SurfaceColorFormat
 import org.jetbrains.skia.SurfaceOrigin
+
+/**
+ * Raw Metal objects backing the current macOS Tao composition surface.
+ *
+ * A same-process producer may submit its writes through [commandQueue] before
+ * calling [TextureViewController.markFrameAvailable]. Nucleus' Skia context uses
+ * that exact queue, so producer writes and the GPU snapshot performed by
+ * [TextureView] are ordered without a CPU wait or a pixel readback.
+ *
+ * Both pointers are borrowed and valid only while this value remains current in
+ * composition. A producer must stop using them from its `DisposableEffect`.
+ */
+public data class MacMetalTextureHost(
+    /** Borrowed `id<MTLDevice>` pointer. */
+    public val device: Long,
+    /** Borrowed `id<MTLCommandQueue>` pointer used by the enclosing Skia context. */
+    public val commandQueue: Long,
+    /** Borrowed `NSView` pointer used to resolve the current NSScreen/EDR capability. */
+    public val nativeView: Long,
+)
+
+/**
+ * Returns the Metal host of the current macOS Tao composition surface.
+ * Returns null outside a live Metal-backed macOS Tao surface.
+ */
+@Composable
+public fun currentMacMetalTextureHost(): MacMetalTextureHost? {
+    val host = LocalTaoMetalTextureHost.current ?: return null
+    if (
+        Platform.Current != Platform.MacOS ||
+        host.metalDevicePtr == 0L ||
+        host.metalCommandQueuePtr == 0L ||
+        host.nativeViewPtr == 0L
+    ) {
+        return null
+    }
+    return remember(host) {
+        MacMetalTextureHost(
+            device = host.metalDevicePtr,
+            commandQueue = host.metalCommandQueuePtr,
+            nativeView = host.nativeViewPtr,
+        )
+    }
+}
 
 /**
  * macOS implementation of [TextureView]. The producer's `IOSurface` (or
@@ -215,11 +260,18 @@ private fun importTexture(
             NativeTaoMacOsTextureBridge.nativeDestroy(handle)
             return@runOnRenderThread null
         }
+        val pixelFormat = NativeTaoMacOsTextureBridge.nativePixelFormat(handle)
         val colorFormat =
-            if (NativeTaoMacOsTextureBridge.nativePixelFormat(handle) == NativeTaoMacOsTextureBridge.FORMAT_RGBA8) {
-                SurfaceColorFormat.RGBA_8888
+            when (pixelFormat) {
+                NativeTaoMacOsTextureBridge.FORMAT_RGBA8 -> SurfaceColorFormat.RGBA_8888
+                NativeTaoMacOsTextureBridge.FORMAT_RGBA16_FLOAT -> skikoRgbaF16SurfaceColorFormat
+                else -> SurfaceColorFormat.BGRA_8888
+            }
+        val colorSpace =
+            if (pixelFormat == NativeTaoMacOsTextureBridge.FORMAT_RGBA16_FLOAT) {
+                ColorSpace.sRGBLinear
             } else {
-                SurfaceColorFormat.BGRA_8888
+                ColorSpace.sRGB
             }
         val renderTarget = BackendRenderTarget.makeMetal(widthPx, heightPx, texturePtr)
         val surface =
@@ -229,7 +281,7 @@ private fun importTexture(
                     rt = renderTarget,
                     origin = SurfaceOrigin.TOP_LEFT,
                     colorFormat = colorFormat,
-                    colorSpace = ColorSpace.sRGB,
+                    colorSpace = colorSpace,
                 )
             }.getOrNull()
         if (surface == null) {

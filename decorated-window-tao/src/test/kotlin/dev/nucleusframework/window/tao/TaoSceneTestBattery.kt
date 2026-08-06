@@ -9,6 +9,7 @@ import dev.nucleusframework.window.tao.event.TaoKeyboardModifiersDecodeTest
 import dev.nucleusframework.window.tao.event.TaoSyntheticMouseWheelEventTest
 import dev.nucleusframework.window.tao.event.TaoWheelPinchZoomTest
 import dev.nucleusframework.window.tao.scene.TaoSceneAnimationTest
+import dev.nucleusframework.window.tao.scene.TaoInteropTransactionTest
 import dev.nucleusframework.window.tao.scene.TaoSceneKeyboardTest
 import dev.nucleusframework.window.tao.scene.TaoScenePointerTest
 import dev.nucleusframework.window.tao.scene.TaoScenePopupTest
@@ -106,6 +107,9 @@ public object TaoSceneTestBattery {
             TaoWindowScrollTest().pixelScrollMirrorsMacOsAwtPreciseWheelRotationScale()
         }
         run("TaoWindowResizableTest: reflectsCreationFlag") { TaoWindowResizableTest().reflectsCreationFlag() }
+        run("TaoInteropTransactionTest: preparesComposeStateBeforeNativePresentationActions") {
+            TaoInteropTransactionTest().preparesComposeStateBeforeNativePresentationActions()
+        }
         run("TaoSceneRenderTest: solid background fills the whole frame") {
             TaoSceneRenderTest().`solid background fills the whole frame`()
         }

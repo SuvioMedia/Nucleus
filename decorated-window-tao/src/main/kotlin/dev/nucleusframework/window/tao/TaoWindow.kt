@@ -578,6 +578,7 @@ public class TaoWindow internal constructor(
     // WM_WINDOWPOSCHANGED prepare inside nativeSetFullscreen then only has
     // to re-draw — fast enough to finish within the geometry change.
     private val fullscreenPrepareListeners = CopyOnWriteArrayList<(Int, Int, Boolean) -> Unit>()
+    private val fullscreenTransitionListeners = CopyOnWriteArrayList<(Boolean, Boolean) -> Unit>()
 
     /**
      * Windows only: registers the fullscreen pre-layout hook, invoked with
@@ -586,6 +587,17 @@ public class TaoWindow internal constructor(
      */
     public fun onFullscreenPrepare(block: (width: Int, height: Int, fullscreen: Boolean) -> Unit) {
         fullscreenPrepareListeners += block
+    }
+
+    internal fun onFullscreenTransition(block: (fullscreen: Boolean, completed: Boolean) -> Unit) {
+        fullscreenTransitionListeners += block
+    }
+
+    internal fun dispatchFullscreenTransition(
+        fullscreen: Boolean,
+        completed: Boolean,
+    ) {
+        fullscreenTransitionListeners.forEach { it(fullscreen, completed) }
     }
 
     /** Borderless fullscreen on the current monitor.

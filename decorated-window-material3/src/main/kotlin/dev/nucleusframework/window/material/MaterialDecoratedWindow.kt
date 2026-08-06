@@ -104,6 +104,10 @@ fun NucleusApplicationScope.MaterialDecoratedWindow(
     // focusable (Tao backend; on Linux effective on X11/XWayland only).
     // No-op on AWT.
     hiddenFromDock: Boolean = false,
+    // macOS/Tao: render the window through a half-float extended-linear sRGB
+    // swapchain so TextureView can present HDR/EDR values without clamping.
+    // Creation-time; ignored by AWT and non-macOS Tao backends.
+    macOSExtendedDynamicRange: Boolean = false,
     minimumSize: DpSize? = null,
     onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
     onKeyEvent: (KeyEvent) -> Boolean = { false },
@@ -134,6 +138,7 @@ fun NucleusApplicationScope.MaterialDecoratedWindow(
             alwaysOnTop = alwaysOnTop,
             nativePopupLayers = nativePopupLayers,
             hiddenFromDock = hiddenFromDock,
+            macOSExtendedDynamicRange = macOSExtendedDynamicRange,
             minimumSize = minimumSize,
             onPreviewKeyEvent = onPreviewKeyEvent,
             onKeyEvent = onKeyEvent,

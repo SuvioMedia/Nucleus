@@ -161,6 +161,7 @@ static JavaVM *sMetalJVM = NULL;
 static jclass sMetalBridgeClass = NULL;       // global ref
 static jmethodID sMetalOnOffsetChanged = NULL;
 static jmethodID sMetalOnFullscreenPrepare = NULL;
+static jmethodID sMetalOnFullscreenTransition = NULL;
 static atomic_bool sMetalCallbacksEnabled = ATOMIC_VAR_INIT(false);
 static atomic_bool sMetalShutdownInProgress = ATOMIC_VAR_INIT(false);
 
@@ -177,6 +178,8 @@ static void ensureMetalJVMCached(JNIEnv *env) {
                 env, sMetalBridgeClass, "onMenuBarOffsetChanged", "(JF)V");
             sMetalOnFullscreenPrepare = (*env)->GetStaticMethodID(
                 env, sMetalBridgeClass, "onFullscreenPrepare", "(JII)V");
+            sMetalOnFullscreenTransition = (*env)->GetStaticMethodID(
+                env, sMetalBridgeClass, "onFullscreenTransition", "(JZZ)V");
             atomic_store(&sMetalCallbacksEnabled, true);
         }
     });
@@ -235,6 +238,35 @@ static void notifyFullscreenPrepare(jlong nsViewPtr, jint widthPx, jint heightPx
 
     (*env)->CallStaticVoidMethod(env, sMetalBridgeClass, sMetalOnFullscreenPrepare,
                                  nsViewPtr, widthPx, heightPx);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
+}
+
+static void notifyFullscreenTransition(jlong nsViewPtr, BOOL fullscreen, BOOL completed) {
+    if (!atomic_load(&sMetalCallbacksEnabled)) return;
+    if (!sMetalJVM || !sMetalBridgeClass || !sMetalOnFullscreenTransition) return;
+
+    JNIEnv *env = NULL;
+    jint status = (*sMetalJVM)->GetEnv(sMetalJVM, (void **)&env, JNI_VERSION_1_8);
+    if (status == JNI_EDETACHED) {
+        if ((*sMetalJVM)->AttachCurrentThreadAsDaemon(sMetalJVM, (void **)&env, NULL) != JNI_OK) {
+            return;
+        }
+    } else if (status != JNI_OK) {
+        return;
+    }
+    if (!env) return;
+
+    (*env)->CallStaticVoidMethod(
+        env,
+        sMetalBridgeClass,
+        sMetalOnFullscreenTransition,
+        nsViewPtr,
+        fullscreen ? JNI_TRUE : JNI_FALSE,
+        completed ? JNI_TRUE : JNI_FALSE
+    );
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionDescribe(env);
         (*env)->ExceptionClear(env);
@@ -888,6 +920,11 @@ static void removeMenuBarMonitor(NSWindow *window) {
     [self setTransition:1];
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        YES,
+        NO
+    );
     // Drop any in-flight menu bar offset so the monitor (re)installed in
     // didEnterFS starts from a known baseline.
     removeMenuBarMonitor(w);
@@ -947,6 +984,11 @@ static void removeMenuBarMonitor(NSWindow *window) {
     [self setTransition:1];
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        NO,
+        NO
+    );
     // Tear down the menu bar monitor before the exit animation so AppKit
     // can transition its native chrome without our monitor racing it.
     removeMenuBarMonitor(w);
@@ -1003,6 +1045,11 @@ static void removeMenuBarMonitor(NSWindow *window) {
     }
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        YES,
+        YES
+    );
     applyStoredWindowBackground(w, _view);
     // Install replacement traffic-light buttons inside the contentView so
     // they remain visible when AppKit auto-hides the native title bar (and
@@ -1068,6 +1115,11 @@ static void removeMenuBarMonitor(NSWindow *window) {
     }
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        NO,
+        YES
+    );
     applyStoredWindowBackground(w, _view);
     // Re-show the standard buttons (hidden in willExitFS).
     [[w standardWindowButton:NSWindowCloseButton] setHidden:NO];
@@ -1102,7 +1154,7 @@ static void ensureFrameClassLoaded(JNIEnv *env) {
 
 JNIEXPORT jlong JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
-        JNIEnv *env, jclass clazz, jlong nsViewPtr) {
+        JNIEnv *env, jclass clazz, jlong nsViewPtr, jboolean extendedDynamicRange) {
     // Prime the native -> JVM callback plumbing for every window, not just the
     // ones that happen to install a menu-bar monitor: the fullscreen-transition
     // prepare (#327) fires from an AppKit notification with no JNIEnv of its
@@ -1119,8 +1171,25 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
 
     CAMetalLayer *layer = [CAMetalLayer layer];
     layer.device = device;
-    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    BOOL useExtendedDynamicRange = extendedDynamicRange == JNI_TRUE;
+    layer.pixelFormat = useExtendedDynamicRange
+        ? MTLPixelFormatRGBA16Float
+        : MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly = YES;
+    if (useExtendedDynamicRange) {
+        // A float swapchain alone is not enough: without the extended-linear
+        // color space and the EDR opt-in CoreAnimation treats the drawable as
+        // ordinary SDR and clamps values above reference white at presentation.
+        CGColorSpaceRef colorSpace =
+            CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
+        if (colorSpace != NULL) {
+            layer.colorspace = colorSpace;
+            CGColorSpaceRelease(colorSpace);
+        }
+        if (@available(macOS 10.15, *)) {
+            layer.wantsExtendedDynamicRangeContent = YES;
+        }
+    }
     layer.contentsScale = view.window.backingScaleFactor > 0
         ? view.window.backingScaleFactor
         : [NSScreen mainScreen].backingScaleFactor;
@@ -1977,6 +2046,13 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeQueuePtr(
     return (jlong)(uintptr_t) (__bridge void *) HANDLE_OF(handle)->queue;
 }
 
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeViewPtr(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    if (handle == 0) return 0;
+    return (jlong)(uintptr_t) (__bridge void *) HANDLE_OF(handle)->view;
+}
+
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeResize(
         JNIEnv *env, jclass clazz, jlong handle, jint widthPx, jint heightPx, jfloat scale) {
@@ -2219,8 +2295,25 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativePresentWithInte
         [CATransaction commit];
     };
 
-    if ([NSThread isMainThread]) work();
-    else                          dispatch_sync(dispatch_get_main_queue(), work);
+    if ([NSThread isMainThread]) {
+        work();
+    } else if (atomic_load(&att->in_transition) != 0) {
+        // AppKit's willEnter/willExit callbacks synchronously ask the JVM for
+        // a transition-sized frame. An already in-flight interop frame can be
+        // waiting here at exactly that moment. Dispatching synchronously would
+        // then form a cycle:
+        //
+        //   AppKit callback -> JVM fullscreen prepare -> TaoMetalRender
+        //   TaoMetalRender  -> dispatch_sync(main queue)
+        //
+        // Queue only that transition-time present. The block owns the drawable
+        // and the global Runnable reference, so both remain valid until AppKit
+        // returns from its notification and drains the main queue. Steady-state
+        // frames retain the synchronous atomic transaction path below.
+        dispatch_async(dispatch_get_main_queue(), work);
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), work);
+    }
 }
 
 // ── newFullscreenControls JNI bridge ─────────────────────────────────────
