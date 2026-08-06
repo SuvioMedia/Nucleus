@@ -1,3 +1,5 @@
+@file:Suppress("MatchingDeclarationName")
+
 package dev.nucleusframework.window.tao
 
 import androidx.compose.foundation.layout.Box
