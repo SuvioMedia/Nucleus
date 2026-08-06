@@ -32,7 +32,8 @@ develocity {
 rootProject.name = "Nucleus"
 
 val libraryOnly =
-    providers.gradleProperty("nucleusLibraryOnly")
+    providers
+        .gradleProperty("nucleusLibraryOnly")
         .map(String::toBoolean)
         .orElse(false)
         .get()

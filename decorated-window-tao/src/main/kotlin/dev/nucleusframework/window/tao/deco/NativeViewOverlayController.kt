@@ -172,7 +172,7 @@ internal class NativeViewOverlayController(
                 println(
                     "[NUCLEUS_TAO_OVERLAY_INPUT] type=$eventType receivedNs=$receivedAtNanos " +
                         "completedNs=$completedAtNanos elapsedUs=" +
-                        ((completedAtNanos - receivedAtNanos) / NanosPerMicrosecond),
+                        ((completedAtNanos - receivedAtNanos) / NANOS_PER_MICROSECOND),
                 )
             }
         }
@@ -567,7 +567,7 @@ internal class NativeViewOverlayController(
     }
 
     private companion object {
-        private const val NanosPerMicrosecond = 1_000L
+        private const val NANOS_PER_MICROSECOND = 1_000L
         private val TraceOverlayInput = java.lang.Boolean.getBoolean("nucleus.tao.traceOverlayInput")
         private val EmptyRegions = FloatArray(0)
     }
