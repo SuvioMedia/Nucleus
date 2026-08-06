@@ -1,0 +1,308 @@
+name: Publish Suvio HDR Fork
+run-name: Publish Nucleus v${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Fork version, for example 2.3.2-kmp-hdr.1
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+  id-token: write
+  pages: write
+
+concurrency:
+  group: publish-suvio-hdr-fork
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      upstream-version: ${{ steps.release.outputs.upstream-version }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release version and upstream base
+        id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$REQUESTED_VERSION"
+          version_pattern='^([0-9]+[.][0-9]+[.][0-9]+)-kmp-hdr[.]([1-9][0-9]*)$'
+          if [[ ! "$version" =~ $version_pattern ]]; then
+            echo "::error::Version must match X.Y.Z-kmp-hdr.N"
+            exit 1
+          fi
+
+          upstream_version="${BASH_REMATCH[1]}"
+          tag="v${version}"
+
+          git fetch --no-tags \
+            https://github.com/NucleusFramework/Nucleus.git \
+            "refs/tags/v${upstream_version}"
+          upstream_commit="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          fork_commit_count="$(git rev-list --count "${upstream_commit}..${GITHUB_SHA}")"
+          fork_parent="$(git rev-parse "${GITHUB_SHA}^")"
+          if [[ "$fork_commit_count" != "1" || "$fork_parent" != "$upstream_commit" ]]; then
+            echo "::error::$GITHUB_SHA must be exactly one commit ahead of upstream v${upstream_version}"
+            exit 1
+          fi
+
+          remote_tag="$(git ls-remote --tags origin "refs/tags/${tag}" | awk '{print $1}')"
+          if [[ -n "$remote_tag" && "$remote_tag" != "$GITHUB_SHA" ]]; then
+            echo "::error::${tag} already points to ${remote_tag}, not ${GITHUB_SHA}"
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "upstream-version=${upstream_version}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  build-natives:
+    needs: validate
+    uses: ./.github/workflows/build-natives.yaml
+
+  publish-maven:
+    needs: [validate, build-natives]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+
+      - name: Download all native libraries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: natives-*
+          merge-multiple: true
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Run release checks
+        run: ./gradlew preMerge --continue
+
+      - name: Publish Maven repository
+        env:
+          NUCLEUS_VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          repository="$RUNNER_TEMP/nucleus-maven"
+          mkdir -p "$repository"
+          env GITHUB_REF="refs/tags/v${NUCLEUS_VERSION}" \
+            ./gradlew publishAllToMavenLocal \
+              --no-configuration-cache \
+              --no-daemon \
+              -Dmaven.repo.local="$repository"
+
+          tao_jar="$repository/dev/nucleusframework/nucleus.decorated-window-tao/${NUCLEUS_VERSION}/nucleus.decorated-window-tao-${NUCLEUS_VERSION}.jar"
+          application_jar="$repository/dev/nucleusframework/nucleus.nucleus-application/${NUCLEUS_VERSION}/nucleus.nucleus-application-${NUCLEUS_VERSION}.jar"
+          plugin_marker="$repository/dev/nucleusframework/dev.nucleusframework.gradle.plugin/${NUCLEUS_VERSION}/dev.nucleusframework.gradle.plugin-${NUCLEUS_VERSION}.pom"
+
+          test -f "$tao_jar"
+          test -f "$application_jar"
+          test -f "$plugin_marker"
+
+          required_tao_natives=(
+            nucleus/native/darwin-aarch64/libnucleus_tao_metal.dylib
+            nucleus/native/darwin-x64/libnucleus_tao_metal.dylib
+            nucleus/native/win32-aarch64/nucleus_tao.dll
+            nucleus/native/win32-x64/nucleus_tao.dll
+            nucleus/native/linux-aarch64/libnucleus_tao.so
+            nucleus/native/linux-x64/libnucleus_tao.so
+          )
+          jar_entries="$(jar tf "$tao_jar")"
+          for native_path in "${required_tao_natives[@]}"; do
+            if ! grep -Fqx "$native_path" <<< "$jar_entries"; then
+              echo "::error::Missing ${native_path} in $(basename "$tao_jar")"
+              exit 1
+            fi
+          done
+
+          archive="$RUNNER_TEMP/nucleus-maven-${NUCLEUS_VERSION}.zip"
+          (
+            cd "$repository"
+            zip -q -r "$archive" .
+          )
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum "$(basename "$archive")" > "$(basename "$archive").sha256"
+          )
+
+      - name: Upload Maven repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: fork-maven-${{ needs.validate.outputs.version }}
+          path: |
+            ${{ runner.temp }}/nucleus-maven-${{ needs.validate.outputs.version }}.zip
+            ${{ runner.temp }}/nucleus-maven-${{ needs.validate.outputs.version }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [validate, publish-maven]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Maven repository
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-maven-${{ needs.validate.outputs.version }}
+          path: ${{ runner.temp }}/release
+
+      - name: Create immutable fork tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          UPSTREAM_VERSION: ${{ needs.validate.outputs.upstream-version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_dir="$RUNNER_TEMP/release"
+          archive="$release_dir/nucleus-maven-${RELEASE_VERSION}.zip"
+          checksum="$release_dir/nucleus-maven-${RELEASE_VERSION}.zip.sha256"
+          (
+            cd "$release_dir"
+            sha256sum -c "$(basename "$checksum")"
+          )
+
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            # Tags created with GITHUB_TOKEN do not fan out into inherited
+            # upstream tag workflows, which require credentials owned by upstream.
+            git push origin "${GITHUB_SHA}:refs/tags/${RELEASE_TAG}"
+          fi
+
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "Suvio-maintained Nucleus fork for native media and HDR/EDR integration."
+            echo
+            echo "- Upstream base: Nucleus v${UPSTREAM_VERSION}"
+            echo "- Fork version: ${RELEASE_VERSION}"
+            echo "- Maven repository: https://suviomedia.github.io/Nucleus/maven/"
+            echo "- The attached Maven repository contains all runtime modules, the Gradle plugin, and native libraries for macOS, Windows, and Linux."
+          } > "$notes"
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              "$archive" \
+              "$checksum" \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              "$archive" \
+              "$checksum" \
+              --target "$GITHUB_SHA" \
+              --title "Nucleus ${RELEASE_VERSION}" \
+              --notes-file "$notes" \
+              --prerelease
+          fi
+
+  pages-artifact:
+    needs: [validate, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download current Maven repository
+        uses: actions/download-artifact@v4
+        with:
+          name: fork-maven-${{ needs.validate.outputs.version }}
+          path: ${{ runner.temp }}/current
+
+      - name: Rebuild Maven Pages from immutable Releases
+        env:
+          CURRENT_TAG: ${{ needs.validate.outputs.tag }}
+          CURRENT_VERSION: ${{ needs.validate.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          site="$RUNNER_TEMP/site"
+          releases="$RUNNER_TEMP/releases"
+          mkdir -p "$site/maven" "$releases"
+
+          while IFS= read -r tag; do
+            [[ -z "$tag" || "$tag" == "$CURRENT_TAG" ]] && continue
+            release_dir="$releases/$tag"
+            mkdir -p "$release_dir"
+            if gh release download "$tag" \
+              --pattern 'nucleus-maven-*.zip' \
+              --pattern 'nucleus-maven-*.zip.sha256' \
+              --dir "$release_dir"; then
+              checksum="$(find "$release_dir" -maxdepth 1 -name '*.zip.sha256' -print -quit)"
+              if [[ -z "$checksum" ]]; then
+                echo "::error::Missing checksum for ${tag}"
+                exit 1
+              fi
+              (
+                cd "$release_dir"
+                sha256sum -c "$(basename "$checksum")"
+              )
+              archive="$(find "$release_dir" -maxdepth 1 -name '*.zip' -print -quit)"
+              unzip -qo "$archive" -d "$site/maven"
+            fi
+          done < <(gh release list --limit 1000 --json tagName --jq '.[].tagName')
+
+          (
+            cd "$RUNNER_TEMP/current"
+            sha256sum -c "nucleus-maven-${CURRENT_VERSION}.zip.sha256"
+          )
+          unzip -qo \
+            "$RUNNER_TEMP/current/nucleus-maven-${CURRENT_VERSION}.zip" \
+            -d "$site/maven"
+
+          touch "$site/.nojekyll"
+          {
+            echo '<!doctype html>'
+            echo '<html lang="en"><meta charset="utf-8">'
+            echo '<title>Suvio Nucleus Maven repository</title>'
+            echo '<h1>Suvio Nucleus Maven repository</h1>'
+            echo "<p>Latest published fork: ${CURRENT_VERSION}</p>"
+            echo '<p>Repository URL: <code>https://suviomedia.github.io/Nucleus/maven/</code></p>'
+          } > "$site/index.html"
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ${{ runner.temp }}/site
+
+  deploy-pages:
+    needs: pages-artifact
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy Maven repository to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

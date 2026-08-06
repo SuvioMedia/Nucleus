@@ -74,12 +74,17 @@ internal data class D3D11SharedTextureSource(
  * window's own Metal device, so the producer's pixels are never copied
  * on the CPU, whatever device (or process) produced them.
  *
- * The surface must be 32-bit `BGRA` or `RGBA` with premultiplied alpha, and
- * [widthPx] × [heightPx] must match its plane dimensions exactly (Metal
- * validates the texture descriptor against them). It must also be backed by
- * memory the window's GPU can share — true on Apple silicon and Intel
- * integrated GPUs; on a discrete-only Intel Mac the import fails and
- * [TextureView] renders an empty `Box`.
+ * The surface must be 32-bit `BGRA` / `RGBA` with premultiplied alpha, or
+ * 64-bit half-float `RGhA` (`kCVPixelFormatType_64RGBAHalf`) containing
+ * extended-linear sRGB. [widthPx] × [heightPx] must match its plane dimensions
+ * exactly (Metal validates the texture descriptor against them). Half-float
+ * sources preserve values outside `[0, 1]` when their containing Tao window is
+ * opened with `macOSExtendedDynamicRange = true`; an SDR window intentionally
+ * maps the result into its SDR swapchain.
+ *
+ * The surface must also be backed by memory the window's GPU can share — true
+ * on Apple silicon and Intel integrated GPUs; on a discrete-only Intel Mac the
+ * import fails and [TextureView] renders an empty `Box`.
  *
  * Synchronization: Skia's Metal backend exposes no way to sample a wrapped
  * `id<MTLTexture>` directly, so each frame is pulled through one GPU-GPU
@@ -113,9 +118,11 @@ internal data class IOSurfaceTextureSource(
  * A texture that is neither render-target-capable on the window's device nor
  * `IOSurface`-backed cannot be imported; hand over an
  * [nucleusIOSurfaceTextureSource] in that case. Pixel format must be
- * `BGRA8Unorm` or `RGBA8Unorm` (sRGB variants included) with premultiplied
- * alpha. Same frame-copy and synchronization contract as
- * [nucleusIOSurfaceTextureSource].
+ * `BGRA8Unorm`, `RGBA8Unorm` (sRGB variants included), or `RGBA16Float` with
+ * premultiplied alpha. `RGBA16Float` is interpreted as extended-linear sRGB;
+ * use `macOSExtendedDynamicRange = true` on the containing Tao window to keep
+ * values above SDR white through presentation. Same frame-copy and
+ * synchronization contract as [nucleusIOSurfaceTextureSource].
  */
 public fun nucleusMetalTextureSource(
     metalTexture: Long,

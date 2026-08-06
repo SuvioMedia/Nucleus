@@ -161,6 +161,7 @@ static JavaVM *sMetalJVM = NULL;
 static jclass sMetalBridgeClass = NULL;       // global ref
 static jmethodID sMetalOnOffsetChanged = NULL;
 static jmethodID sMetalOnFullscreenPrepare = NULL;
+static jmethodID sMetalOnFullscreenTransition = NULL;
 static atomic_bool sMetalCallbacksEnabled = ATOMIC_VAR_INIT(false);
 static atomic_bool sMetalShutdownInProgress = ATOMIC_VAR_INIT(false);
 
@@ -177,6 +178,8 @@ static void ensureMetalJVMCached(JNIEnv *env) {
                 env, sMetalBridgeClass, "onMenuBarOffsetChanged", "(JF)V");
             sMetalOnFullscreenPrepare = (*env)->GetStaticMethodID(
                 env, sMetalBridgeClass, "onFullscreenPrepare", "(JII)V");
+            sMetalOnFullscreenTransition = (*env)->GetStaticMethodID(
+                env, sMetalBridgeClass, "onFullscreenTransition", "(JZZ)V");
             atomic_store(&sMetalCallbacksEnabled, true);
         }
     });
@@ -235,6 +238,35 @@ static void notifyFullscreenPrepare(jlong nsViewPtr, jint widthPx, jint heightPx
 
     (*env)->CallStaticVoidMethod(env, sMetalBridgeClass, sMetalOnFullscreenPrepare,
                                  nsViewPtr, widthPx, heightPx);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
+}
+
+static void notifyFullscreenTransition(jlong nsViewPtr, BOOL fullscreen, BOOL completed) {
+    if (!atomic_load(&sMetalCallbacksEnabled)) return;
+    if (!sMetalJVM || !sMetalBridgeClass || !sMetalOnFullscreenTransition) return;
+
+    JNIEnv *env = NULL;
+    jint status = (*sMetalJVM)->GetEnv(sMetalJVM, (void **)&env, JNI_VERSION_1_8);
+    if (status == JNI_EDETACHED) {
+        if ((*sMetalJVM)->AttachCurrentThreadAsDaemon(sMetalJVM, (void **)&env, NULL) != JNI_OK) {
+            return;
+        }
+    } else if (status != JNI_OK) {
+        return;
+    }
+    if (!env) return;
+
+    (*env)->CallStaticVoidMethod(
+        env,
+        sMetalBridgeClass,
+        sMetalOnFullscreenTransition,
+        nsViewPtr,
+        fullscreen ? JNI_TRUE : JNI_FALSE,
+        completed ? JNI_TRUE : JNI_FALSE
+    );
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionDescribe(env);
         (*env)->ExceptionClear(env);
@@ -888,6 +920,11 @@ static void removeMenuBarMonitor(NSWindow *window) {
     [self setTransition:1];
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        YES,
+        NO
+    );
     // Drop any in-flight menu bar offset so the monitor (re)installed in
     // didEnterFS starts from a known baseline.
     removeMenuBarMonitor(w);
@@ -947,6 +984,11 @@ static void removeMenuBarMonitor(NSWindow *window) {
     [self setTransition:1];
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        NO,
+        NO
+    );
     // Tear down the menu bar monitor before the exit animation so AppKit
     // can transition its native chrome without our monitor racing it.
     removeMenuBarMonitor(w);
@@ -1003,6 +1045,11 @@ static void removeMenuBarMonitor(NSWindow *window) {
     }
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        YES,
+        YES
+    );
     applyStoredWindowBackground(w, _view);
     // Install replacement traffic-light buttons inside the contentView so
     // they remain visible when AppKit auto-hides the native title bar (and
@@ -1068,6 +1115,11 @@ static void removeMenuBarMonitor(NSWindow *window) {
     }
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        NO,
+        YES
+    );
     applyStoredWindowBackground(w, _view);
     // Re-show the standard buttons (hidden in willExitFS).
     [[w standardWindowButton:NSWindowCloseButton] setHidden:NO];
@@ -1102,7 +1154,7 @@ static void ensureFrameClassLoaded(JNIEnv *env) {
 
 JNIEXPORT jlong JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
-        JNIEnv *env, jclass clazz, jlong nsViewPtr) {
+        JNIEnv *env, jclass clazz, jlong nsViewPtr, jboolean extendedDynamicRange) {
     // Prime the native -> JVM callback plumbing for every window, not just the
     // ones that happen to install a menu-bar monitor: the fullscreen-transition
     // prepare (#327) fires from an AppKit notification with no JNIEnv of its
@@ -1119,8 +1171,25 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
 
     CAMetalLayer *layer = [CAMetalLayer layer];
     layer.device = device;
-    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    BOOL useExtendedDynamicRange = extendedDynamicRange == JNI_TRUE;
+    layer.pixelFormat = useExtendedDynamicRange
+        ? MTLPixelFormatRGBA16Float
+        : MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly = YES;
+    if (useExtendedDynamicRange) {
+        // A float swapchain alone is not enough: without the extended-linear
+        // color space and the EDR opt-in CoreAnimation treats the drawable as
+        // ordinary SDR and clamps values above reference white at presentation.
+        CGColorSpaceRef colorSpace =
+            CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
+        if (colorSpace != NULL) {
+            layer.colorspace = colorSpace;
+            CGColorSpaceRelease(colorSpace);
+        }
+        if (@available(macOS 10.15, *)) {
+            layer.wantsExtendedDynamicRangeContent = YES;
+        }
+    }
     layer.contentsScale = view.window.backingScaleFactor > 0
         ? view.window.backingScaleFactor
         : [NSScreen mainScreen].backingScaleFactor;
@@ -1278,6 +1347,38 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeConfigureChrome
     };
     if ([NSThread isMainThread]) apply();
     else                          dispatch_sync(dispatch_get_main_queue(), apply);
+}
+
+/**
+ * Returns AppKit's click count for the left-mouse-down event currently being
+ * dispatched to this NSView's window. Unlike a JVM-side elapsed-time check,
+ * NSEvent.clickCount already honours the user's double-click speed and the
+ * platform's spatial tolerance.
+ */
+JNIEXPORT jint JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeCurrentEventClickCount(
+        JNIEnv *env, jclass clazz, jlong nsViewPtr) {
+    NSView *view = (__bridge NSView *)(void *)(uintptr_t)nsViewPtr;
+    if (view == nil) return 0;
+
+    __block jint result = 0;
+    dispatch_block_t read = ^{
+        NSWindow *win = view.window;
+        NSEvent *event = [NSApp currentEvent];
+        if (win != nil && event != nil &&
+            event.type == NSEventTypeLeftMouseDown && event.window == win) {
+            result = (jint)event.clickCount;
+        }
+    };
+    if ([NSThread isMainThread]) read();
+    else                          dispatch_sync(dispatch_get_main_queue(), read);
+    return result;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeDoubleClickIntervalMillis(
+        JNIEnv *env, jclass clazz) {
+    return (jlong)llround([NSEvent doubleClickInterval] * 1000.0);
 }
 
 /**
@@ -1977,6 +2078,13 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeQueuePtr(
     return (jlong)(uintptr_t) (__bridge void *) HANDLE_OF(handle)->queue;
 }
 
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeViewPtr(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    if (handle == 0) return 0;
+    return (jlong)(uintptr_t) (__bridge void *) HANDLE_OF(handle)->view;
+}
+
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeResize(
         JNIEnv *env, jclass clazz, jlong handle, jint widthPx, jint heightPx, jfloat scale) {
@@ -2000,34 +2108,43 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeResize(
 JNIEXPORT jobject JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeBeginFrame(
         JNIEnv *env, jclass clazz, jlong handle) {
-    if (handle == 0) return NULL;
-    NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
+    // This JNI entry point is called from Tao's JVM-owned Metal render thread,
+    // not an AppKit event-loop thread. Such a thread has no implicit
+    // autorelease pool. nextDrawable returns an autoreleased object; without a
+    // local pool its original reference survives for the lifetime of the JVM
+    // thread even though the explicit bridge retain is balanced by present().
+    // Each leaked drawable owns a full-size IOSurface, so 8K playback can grow
+    // into tens of gigabytes after only a few hundred frames.
+    @autoreleasepool {
+        if (handle == 0) return NULL;
+        NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
 
-    id<CAMetalDrawable> drawable = [att->layer nextDrawable];
-    if (drawable == nil) {
-        return NULL;
+        id<CAMetalDrawable> drawable = [att->layer nextDrawable];
+        if (drawable == nil) {
+            return NULL;
+        }
+
+        // Retain so the JVM can hold the pointer until present(); released there.
+        void *retained = (__bridge_retained void *) drawable;
+
+        id<MTLTexture> texture = drawable.texture;
+        CGSize size = att->layer.drawableSize;
+        CGFloat scale = att->layer.contentsScale;
+
+        ensureFrameClassLoaded(env);
+        if (gFrameClass == NULL || gFrameConstructor == NULL) {
+            // Drop the retain to avoid leaking the drawable when the JVM mapping fails.
+            CFBridgingRelease(retained);
+            return NULL;
+        }
+
+        return (*env)->NewObject(env, gFrameClass, gFrameConstructor,
+            (jlong)(uintptr_t) retained,
+            (jlong)(uintptr_t) (__bridge void *) texture,
+            (jint) size.width,
+            (jint) size.height,
+            (jfloat) scale);
     }
-
-    // Retain so the JVM can hold the pointer until present(); released there.
-    void *retained = (__bridge_retained void *) drawable;
-
-    id<MTLTexture> texture = drawable.texture;
-    CGSize size = att->layer.drawableSize;
-    CGFloat scale = att->layer.contentsScale;
-
-    ensureFrameClassLoaded(env);
-    if (gFrameClass == NULL || gFrameConstructor == NULL) {
-        // Drop the retain to avoid leaking the drawable when the JVM mapping fails.
-        CFBridgingRelease(retained);
-        return NULL;
-    }
-
-    return (*env)->NewObject(env, gFrameClass, gFrameConstructor,
-        (jlong)(uintptr_t) retained,
-        (jlong)(uintptr_t) (__bridge void *) texture,
-        (jint) size.width,
-        (jint) size.height,
-        (jfloat) scale);
 }
 
 JNIEXPORT jboolean JNICALL
@@ -2041,24 +2158,29 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeIsInTransition(
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativePresent(
         JNIEnv *env, jclass clazz, jlong handle, jlong drawablePtr) {
-    if (handle == 0 || drawablePtr == 0) return;
-    NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
+    // commandBuffer is autoreleased as well. Drain it once the committed
+    // present has retained everything it needs instead of retaining every
+    // drawable on the long-lived JVM render thread.
+    @autoreleasepool {
+        if (handle == 0 || drawablePtr == 0) return;
+        NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
 
-    // Move ownership back so ARC releases after the present block finishes.
-    id<CAMetalDrawable> drawable = (__bridge_transfer id<CAMetalDrawable>)
-        (void *)(uintptr_t) drawablePtr;
+        // Move ownership back so ARC releases after the present block finishes.
+        id<CAMetalDrawable> drawable = (__bridge_transfer id<CAMetalDrawable>)
+            (void *)(uintptr_t) drawablePtr;
 
-    id<MTLCommandBuffer> commandBuffer = [att->queue commandBuffer];
-    // Pace the present to the upcoming vsync recorded by the display-link
-    // callback so exactly one present lands per refresh. Falls back to an
-    // untimed present if the display link isn't running yet (first frame / resize).
-    double presentTime = hostTimeToSeconds(atomic_load(&att->next_present_host_time));
-    if (presentTime > 0.0) {
-        [commandBuffer presentDrawable:drawable atTime:presentTime];
-    } else {
-        [commandBuffer presentDrawable:drawable];
+        id<MTLCommandBuffer> commandBuffer = [att->queue commandBuffer];
+        // Pace the present to the upcoming vsync recorded by the display-link
+        // callback so exactly one present lands per refresh. Falls back to an
+        // untimed present if the display link isn't running yet (first frame / resize).
+        double presentTime = hostTimeToSeconds(atomic_load(&att->next_present_host_time));
+        if (presentTime > 0.0) {
+            [commandBuffer presentDrawable:drawable atTime:presentTime];
+        } else {
+            [commandBuffer presentDrawable:drawable];
+        }
+        [commandBuffer commit];
     }
-    [commandBuffer commit];
 }
 
 // ── VSync-paced rendering via CVDisplayLink ──────────────────────────────
@@ -2172,55 +2294,74 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativePresentWithInte
     id<MTLCommandQueue> queue = att->queue;
 
     void (^work)(void) = ^{
-        [CATransaction begin];
+        @autoreleasepool {
+            [CATransaction begin];
 
-        id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
-        [commandBuffer commit];
-        // Block until the GPU has scheduled our work — required before an
-        // explicit [drawable present] under presentsWithTransaction = YES.
-        [commandBuffer waitUntilScheduled];
-        [drawable present];
+            id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
+            [commandBuffer commit];
+            // Block until the GPU has scheduled our work — required before an
+            // explicit [drawable present] under presentsWithTransaction = YES.
+            [commandBuffer waitUntilScheduled];
+            [drawable present];
 
-        if (interopGlobal != NULL) {
-            // Resolve the main thread's JNIEnv (it's the JVM main thread, so
-            // already attached). Cache Runnable.run() once — stable for the
-            // JVM lifetime.
-            JNIEnv *menv = NULL;
-            jint status = sMetalJVM
-                ? (*sMetalJVM)->GetEnv(sMetalJVM, (void **)&menv, JNI_VERSION_1_8)
-                : JNI_ERR;
-            if (status == JNI_EDETACHED && sMetalJVM) {
-                (*sMetalJVM)->AttachCurrentThreadAsDaemon(sMetalJVM, (void **)&menv, NULL);
-            }
-            if (menv != NULL) {
-                static jclass sRunnableClass = NULL;
-                static jmethodID sRunMethod = NULL;
-                if (sRunMethod == NULL) {
-                    jclass local = (*menv)->FindClass(menv, "java/lang/Runnable");
-                    if (local != NULL) {
-                        sRunnableClass = (*menv)->NewGlobalRef(menv, local);
-                        (*menv)->DeleteLocalRef(menv, local);
-                        if (sRunnableClass != NULL) {
-                            sRunMethod = (*menv)->GetMethodID(menv, sRunnableClass, "run", "()V");
+            if (interopGlobal != NULL) {
+                // Resolve the main thread's JNIEnv (it's the JVM main thread, so
+                // already attached). Cache Runnable.run() once — stable for the
+                // JVM lifetime.
+                JNIEnv *menv = NULL;
+                jint status = sMetalJVM
+                    ? (*sMetalJVM)->GetEnv(sMetalJVM, (void **)&menv, JNI_VERSION_1_8)
+                    : JNI_ERR;
+                if (status == JNI_EDETACHED && sMetalJVM) {
+                    (*sMetalJVM)->AttachCurrentThreadAsDaemon(sMetalJVM, (void **)&menv, NULL);
+                }
+                if (menv != NULL) {
+                    static jclass sRunnableClass = NULL;
+                    static jmethodID sRunMethod = NULL;
+                    if (sRunMethod == NULL) {
+                        jclass local = (*menv)->FindClass(menv, "java/lang/Runnable");
+                        if (local != NULL) {
+                            sRunnableClass = (*menv)->NewGlobalRef(menv, local);
+                            (*menv)->DeleteLocalRef(menv, local);
+                            if (sRunnableClass != NULL) {
+                                sRunMethod = (*menv)->GetMethodID(menv, sRunnableClass, "run", "()V");
+                            }
                         }
                     }
-                }
-                if (sRunMethod != NULL) {
-                    (*menv)->CallVoidMethod(menv, interopGlobal, sRunMethod);
-                    if ((*menv)->ExceptionCheck(menv)) {
-                        (*menv)->ExceptionDescribe(menv);
-                        (*menv)->ExceptionClear(menv);
+                    if (sRunMethod != NULL) {
+                        (*menv)->CallVoidMethod(menv, interopGlobal, sRunMethod);
+                        if ((*menv)->ExceptionCheck(menv)) {
+                            (*menv)->ExceptionDescribe(menv);
+                            (*menv)->ExceptionClear(menv);
+                        }
                     }
+                    (*menv)->DeleteGlobalRef(menv, interopGlobal);
                 }
-                (*menv)->DeleteGlobalRef(menv, interopGlobal);
             }
-        }
 
-        [CATransaction commit];
+            [CATransaction commit];
+        }
     };
 
-    if ([NSThread isMainThread]) work();
-    else                          dispatch_sync(dispatch_get_main_queue(), work);
+    if ([NSThread isMainThread]) {
+        work();
+    } else if (atomic_load(&att->in_transition) != 0) {
+        // AppKit's willEnter/willExit callbacks synchronously ask the JVM for
+        // a transition-sized frame. An already in-flight interop frame can be
+        // waiting here at exactly that moment. Dispatching synchronously would
+        // then form a cycle:
+        //
+        //   AppKit callback -> JVM fullscreen prepare -> TaoMetalRender
+        //   TaoMetalRender  -> dispatch_sync(main queue)
+        //
+        // Queue only that transition-time present. The block owns the drawable
+        // and the global Runnable reference, so both remain valid until AppKit
+        // returns from its notification and drains the main queue. Steady-state
+        // frames retain the synchronous atomic transaction path below.
+        dispatch_async(dispatch_get_main_queue(), work);
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), work);
+    }
 }
 
 // ── newFullscreenControls JNI bridge ─────────────────────────────────────

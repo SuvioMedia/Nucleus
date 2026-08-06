@@ -453,6 +453,14 @@ internal interface TaoNativeViewHost {
     fun scheduleInterop(action: () -> Unit) {
         action()
     }
+
+    /**
+     * Enqueues Compose-side state which must be visible before the matching interop frame is
+     * recorded. Hosts without a transaction-aware renderer apply it immediately.
+     */
+    fun scheduleInteropPreparation(action: () -> Unit) {
+        action()
+    }
 }
 
 /**

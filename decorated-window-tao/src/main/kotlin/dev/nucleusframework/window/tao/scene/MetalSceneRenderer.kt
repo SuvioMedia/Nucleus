@@ -80,6 +80,7 @@ internal fun replayPictureToFrame(
     directContext: DirectContext,
     picture: Picture,
     clearColor: Int,
+    extendedDynamicRange: Boolean = false,
     present: (handle: Long, drawablePtr: Long) -> Unit = { h, d ->
         NativeMetalBridge.nativePresent(h, d)
     },
@@ -93,8 +94,18 @@ internal fun replayPictureToFrame(
                 context = directContext,
                 rt = rt,
                 origin = SurfaceOrigin.TOP_LEFT,
-                colorFormat = SurfaceColorFormat.BGRA_8888,
-                colorSpace = ColorSpace.sRGB,
+                colorFormat =
+                    if (extendedDynamicRange) {
+                        skikoRgbaF16SurfaceColorFormat
+                    } else {
+                        SurfaceColorFormat.BGRA_8888
+                    },
+                colorSpace =
+                    if (extendedDynamicRange) {
+                        ColorSpace.sRGBLinear
+                    } else {
+                        ColorSpace.sRGB
+                    },
             ) ?: run {
                 rt.close()
                 return false

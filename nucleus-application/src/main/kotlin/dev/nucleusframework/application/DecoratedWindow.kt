@@ -49,6 +49,10 @@ fun NucleusApplicationScope.DecoratedWindow(
     // WS_EX_TOOLWINDOW, per-window; Linux: GTK skip-taskbar hint, per-window,
     // X11/XWayland only). Honoured by the Tao backend; ignored by AWT.
     hiddenFromDock: Boolean = false,
+    // macOS/Tao only: half-float extended-linear sRGB presentation. Enables
+    // TextureView content to retain HDR/EDR values above SDR white. Creation-
+    // time; ignored by AWT and other platforms.
+    macOSExtendedDynamicRange: Boolean = false,
     minimumSize: DpSize? = null,
     onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
     onKeyEvent: (KeyEvent) -> Boolean = { false },
@@ -104,6 +108,7 @@ fun NucleusApplicationScope.DecoratedWindow(
                 popupFor = popupFor,
                 nativePopupLayers = nativePopupLayers,
                 hiddenFromDock = hiddenFromDock,
+                macOSExtendedDynamicRange = macOSExtendedDynamicRange,
                 minimumSize = minimumSize,
                 onPreviewKeyEvent = onPreviewKeyEvent,
                 onKeyEvent = onKeyEvent,
@@ -138,6 +143,7 @@ fun DecoratedWindow(
     popupFor: NucleusWindow? = null,
     nativePopupLayers: Boolean = false,
     hiddenFromDock: Boolean = false,
+    macOSExtendedDynamicRange: Boolean = false,
     minimumSize: DpSize? = null,
     onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
     onKeyEvent: (KeyEvent) -> Boolean = { false },
@@ -157,6 +163,7 @@ fun DecoratedWindow(
         popupFor = popupFor,
         nativePopupLayers = nativePopupLayers,
         hiddenFromDock = hiddenFromDock,
+        macOSExtendedDynamicRange = macOSExtendedDynamicRange,
         minimumSize = minimumSize,
         onPreviewKeyEvent = onPreviewKeyEvent,
         onKeyEvent = onKeyEvent,

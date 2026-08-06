@@ -2,9 +2,12 @@ package dev.nucleusframework.window.tao
 
 import dev.nucleusframework.window.tao.ffi.NativeMetalBridge
 import dev.nucleusframework.window.tao.ffi.NativeTaoMacOsTextureBridge
+import dev.nucleusframework.window.tao.scene.skikoRgbaF16SurfaceColorFormat
 import org.jetbrains.skia.BackendRenderTarget
 import org.jetbrains.skia.Bitmap
+import org.jetbrains.skia.ColorAlphaType
 import org.jetbrains.skia.ColorSpace
+import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.ContentChangeMode
 import org.jetbrains.skia.DirectContext
 import org.jetbrains.skia.FilterMipmap
@@ -123,6 +126,104 @@ class MacExternalTextureNativeSmokeTest {
         }
     }
 
+    @Test
+    fun halfFloatIoSurfacePreservesValuesAboveSdrWhite() {
+        if (!System.getProperty("os.name", "").lowercase().contains("mac")) return
+        assertTrue(NativeMetalBridge.isLoaded, "nucleus_tao_metal failed to load")
+        assertTrue(NativeTaoMacOsTextureBridge.isLoaded, "texture bridge unavailable")
+
+        val producer = NativeTaoMacOsTextureBridge.nativeTestProducerCreateExtended(TEX_W, TEX_H)
+        if (producer == 0L) {
+            println("SKIP: no Metal device available for RGBA16Float")
+            return
+        }
+        try {
+            val ioSurface = NativeTaoMacOsTextureBridge.nativeTestProducerIoSurface(producer)
+            val devicePtr = NativeTaoMacOsTextureBridge.nativeTestProducerDevicePtr(producer)
+            val queuePtr = NativeTaoMacOsTextureBridge.nativeTestProducerQueuePtr(producer)
+            assertTrue(ioSurface != 0L && devicePtr != 0L && queuePtr != 0L)
+
+            val handle =
+                NativeTaoMacOsTextureBridge.nativeImportIOSurface(devicePtr, ioSurface, TEX_W, TEX_H)
+            assertTrue(handle > 0L, "half-float IOSurface import failed with stage $handle")
+            try {
+                assertEquals(
+                    NativeTaoMacOsTextureBridge.FORMAT_RGBA16_FLOAT,
+                    NativeTaoMacOsTextureBridge.nativePixelFormat(handle),
+                )
+                val texturePtr = NativeTaoMacOsTextureBridge.nativeTexturePtr(handle)
+                assertTrue(texturePtr != 0L)
+                val context = assertNotNull(DirectContext.makeMetal(devicePtr, queuePtr))
+                val renderTarget = BackendRenderTarget.makeMetal(TEX_W, TEX_H, texturePtr)
+                val external =
+                    assertNotNull(
+                        Surface.makeFromBackendRenderTarget(
+                            context = context,
+                            rt = renderTarget,
+                            origin = SurfaceOrigin.TOP_LEFT,
+                            colorFormat = skikoRgbaF16SurfaceColorFormat,
+                            colorSpace = ColorSpace.sRGBLinear,
+                        ),
+                    )
+                val f16Info =
+                    ImageInfo(
+                        DEST_W,
+                        DEST_H,
+                        ColorType.RGBA_F16,
+                        ColorAlphaType.PREMUL,
+                        ColorSpace.sRGBLinear,
+                    )
+                val target = assertNotNull(Surface.makeRenderTarget(context, false, f16Info))
+
+                NativeTaoMacOsTextureBridge.nativeTestProducerFillExtended(
+                    producer = producer,
+                    red = 4.0f,
+                    green = 0.5f,
+                    blue = 0.25f,
+                    alpha = 1.0f,
+                )
+                external.notifyContentWillChange(ContentChangeMode.RETAIN)
+                val frame = assertNotNull(external.makeImageSnapshot())
+                val recorder = PictureRecorder()
+                val canvas = recorder.beginRecording(Rect.makeWH(DEST_W.toFloat(), DEST_H.toFloat()))
+                canvas.drawImageRect(
+                    frame,
+                    Rect.makeWH(TEX_W.toFloat(), TEX_H.toFloat()),
+                    Rect.makeWH(DEST_W.toFloat(), DEST_H.toFloat()),
+                    FilterMipmap(FilterMode.LINEAR, MipmapMode.NONE),
+                    null,
+                    true,
+                )
+                val picture = recorder.finishRecordingAsPicture()
+                target.canvas.drawPicture(picture)
+                target.flushAndSubmit(syncCpu = true)
+
+                val bitmap = Bitmap()
+                assertTrue(bitmap.allocPixels(f16Info), "F16 readback allocation failed")
+                assertTrue(target.readPixels(bitmap, 0, 0), "F16 readback failed")
+                val pixels = assertNotNull(bitmap.readPixels(), "F16 pixels unavailable")
+                val offset = (DEST_H / 2) * bitmap.rowBytes + (DEST_W / 2) * 8
+                val red = halfToFloat(readLittleEndianU16(pixels, offset))
+                assertTrue(
+                    red > 3.5f,
+                    "extended-linear value was clamped or tone-mapped before composition: red=$red",
+                )
+
+                bitmap.close()
+                picture.close()
+                frame.close()
+                target.close()
+                external.close()
+                renderTarget.close()
+                context.close()
+            } finally {
+                NativeTaoMacOsTextureBridge.nativeDestroy(handle)
+            }
+        } finally {
+            NativeTaoMacOsTextureBridge.nativeTestProducerDestroy(producer)
+        }
+    }
+
     /**
      * One full frame of the production pipeline: the producer fills the shared
      * surface, the consumer snapshots the import, records the draw into a
@@ -162,5 +263,21 @@ class MacExternalTextureNativeSmokeTest {
         picture.close()
         frame.close()
         return color
+    }
+
+    private fun readLittleEndianU16(
+        bytes: ByteArray,
+        offset: Int,
+    ): Int = (bytes[offset].toInt() and 0xFF) or ((bytes[offset + 1].toInt() and 0xFF) shl 8)
+
+    private fun halfToFloat(bits: Int): Float {
+        val sign = if ((bits and 0x8000) == 0) 1.0f else -1.0f
+        val exponent = (bits ushr 10) and 0x1F
+        val mantissa = bits and 0x03FF
+        return when (exponent) {
+            0 -> sign * Math.scalb(mantissa / 1024.0f, -14)
+            0x1F -> if (mantissa == 0) sign * Float.POSITIVE_INFINITY else Float.NaN
+            else -> sign * Math.scalb(1.0f + mantissa / 1024.0f, exponent - 15)
+        }
     }
 }

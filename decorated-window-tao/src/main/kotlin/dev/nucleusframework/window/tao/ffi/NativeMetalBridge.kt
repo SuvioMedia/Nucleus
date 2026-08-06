@@ -78,6 +78,7 @@ internal object NativeMetalBridge {
     // frame and grows it to 1:1 — the ramp AppKit's own apps show.
 
     private val fullscreenPrepares = ConcurrentHashMap<Long, (Int, Int) -> Unit>()
+    private val fullscreenTransitions = ConcurrentHashMap<Long, (Boolean, Boolean) -> Unit>()
 
     fun setFullscreenPrepare(
         nsViewPtr: Long,
@@ -85,6 +86,14 @@ internal object NativeMetalBridge {
     ) {
         if (nsViewPtr == 0L) return
         if (block == null) fullscreenPrepares.remove(nsViewPtr) else fullscreenPrepares[nsViewPtr] = block
+    }
+
+    fun setFullscreenTransition(
+        nsViewPtr: Long,
+        block: ((fullscreen: Boolean, completed: Boolean) -> Unit)?,
+    ) {
+        if (nsViewPtr == 0L) return
+        if (block == null) fullscreenTransitions.remove(nsViewPtr) else fullscreenTransitions[nsViewPtr] = block
     }
 
     /**
@@ -100,6 +109,16 @@ internal object NativeMetalBridge {
     ) {
         if (widthPx <= 0 || heightPx <= 0) return
         fullscreenPrepares[nsViewPtr]?.invoke(widthPx, heightPx)
+    }
+
+    /** Publishes AppKit's will/did fullscreen notifications without inferring state from resize. */
+    @JvmStatic
+    fun onFullscreenTransition(
+        nsViewPtr: Long,
+        fullscreen: Boolean,
+        completed: Boolean,
+    ) {
+        fullscreenTransitions[nsViewPtr]?.invoke(fullscreen, completed)
     }
 
     // ── VSync pacing (CVDisplayLink, AWT/skiko MetalVSyncer pattern) ──
@@ -131,7 +150,10 @@ internal object NativeMetalBridge {
      * to all other methods, or 0 on failure.
      */
     @JvmStatic
-    external fun nativeAttach(nsViewPtr: Long): Long
+    external fun nativeAttach(
+        nsViewPtr: Long,
+        extendedDynamicRange: Boolean,
+    ): Long
 
     /**
      * Companion to [nativeAttach] for overlay surfaces (popup NSPanels,
@@ -151,6 +173,19 @@ internal object NativeMetalBridge {
      */
     @JvmStatic
     external fun nativeConfigureChrome(nsViewPtr: Long)
+
+    /**
+     * Click count of AppKit's currently-dispatched left-mouse-down for the
+     * window owning [nsViewPtr], or 0 when no matching event is active.
+     * AppKit has already applied the user's double-click speed and movement
+     * tolerance to this value.
+     */
+    @JvmStatic
+    external fun nativeCurrentEventClickCount(nsViewPtr: Long): Int
+
+    /** macOS system double-click interval in milliseconds. */
+    @JvmStatic
+    external fun nativeDoubleClickIntervalMillis(): Long
 
     /** True on macOS 26 (Tahoe) or later. Cached on the native side. */
     @JvmStatic
@@ -273,6 +308,10 @@ internal object NativeMetalBridge {
     /** Raw pointer to `id<MTLCommandQueue>`. */
     @JvmStatic
     external fun nativeQueuePtr(handle: Long): Long
+
+    /** Borrowed pointer to the `NSView` owning this attachment. */
+    @JvmStatic
+    external fun nativeViewPtr(handle: Long): Long
 
     /**
      * Updates the layer's drawable size and contentsScale to match a new

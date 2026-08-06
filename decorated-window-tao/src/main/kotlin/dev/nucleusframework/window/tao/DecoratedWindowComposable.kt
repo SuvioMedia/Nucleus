@@ -124,6 +124,15 @@ public fun ApplicationScope.DecoratedWindow(
      * Applied at window creation.
      */
     hiddenFromDock: Boolean = false,
+    /**
+     * macOS only: use an `RGBA16Float` extended-linear sRGB swapchain and opt
+     * the `CAMetalLayer` into Extended Dynamic Range presentation. This is the
+     * presentation counterpart of an `RGBA16Float` [TextureView] source: both
+     * are required to preserve values above SDR white through the window.
+     *
+     * Creation-time. Ignored on Windows and Linux.
+     */
+    macOSExtendedDynamicRange: Boolean = false,
     // Parent composition locals bridged into this window's own ComposeScene from
     // the first composition (see [openDecoratedWindow]). Defaults to null for
     // top-level windows; [DecoratedDialog] forwards its parent's locals here.
@@ -153,6 +162,7 @@ public fun ApplicationScope.DecoratedWindow(
                 var position: WindowPosition? = null
                 var placement: WindowPlacement? = null
                 var isMinimized: Boolean? = null
+                var fullscreenTransition: Boolean? = null
             }
         }
 
@@ -197,6 +207,7 @@ public fun ApplicationScope.DecoratedWindow(
                     nativePopupLayers = nativePopupLayers,
                     macOSStyle = macOSStyle,
                     hiddenFromDock = hiddenFromDock,
+                    macOSExtendedDynamicRange = macOSExtendedDynamicRange,
                     initialCompositionLocalContext = compositionLocalContext,
                     content = {
                         val backgroundArgb = latestWindowBackgroundArgb.value
@@ -213,6 +224,23 @@ public fun ApplicationScope.DecoratedWindow(
                         latestContent.invoke(this)
                     },
                 )
+
+            // AppKit emits intermediate resize events while its native fullscreen animation is
+            // still in flight. Track the authoritative will/did notifications so those resizes
+            // cannot publish Floating and immediately cancel or re-enter the transition.
+            w.onFullscreenTransition { fullscreen, completed ->
+                applied.fullscreenTransition = fullscreen.takeUnless { completed }
+                val placement =
+                    when {
+                        fullscreen -> WindowPlacement.Fullscreen
+                        w.isMaximized -> WindowPlacement.Maximized
+                        else -> WindowPlacement.Floating
+                    }
+                if (placement != applied.placement) {
+                    applied.placement = placement
+                    latestState.placement = placement
+                }
+            }
 
             // Initial placement / minimised flag are applied imperatively here
             // (Maximized is handled at builder time, above).
@@ -245,7 +273,15 @@ public fun ApplicationScope.DecoratedWindow(
                 // sync when the user exits fullscreen via Esc / green button or
                 // hits the system maximize gesture.
                 val placementNow =
-                    when {
+                    applied.fullscreenTransition?.let { fullscreen ->
+                        if (fullscreen) {
+                            WindowPlacement.Fullscreen
+                        } else if (w.isMaximized) {
+                            WindowPlacement.Maximized
+                        } else {
+                            WindowPlacement.Floating
+                        }
+                    } ?: when {
                         w.isFullscreen -> WindowPlacement.Fullscreen
                         w.isMaximized -> WindowPlacement.Maximized
                         else -> WindowPlacement.Floating
