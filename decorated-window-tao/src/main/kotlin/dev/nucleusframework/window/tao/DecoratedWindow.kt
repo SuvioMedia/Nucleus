@@ -32,6 +32,7 @@ import dev.nucleusframework.window.GlobalModalDialogCount
 import dev.nucleusframework.window.LocalModalDialogCount
 import dev.nucleusframework.window.LocalTitleBarInfo
 import dev.nucleusframework.window.TitleBarInfo
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.internal.isDark
 import dev.nucleusframework.window.tao.a11y.TaoSemanticsObserver
 import dev.nucleusframework.window.tao.deco.FullscreenOverlayHost
@@ -256,8 +257,8 @@ internal fun ApplicationScope.openDecoratedWindow(
     // policy, app-wide; Windows: WS_EX_TOOLWINDOW, per-window; Linux: GTK
     // skip-taskbar/skip-pager hints, per-window, X11/XWayland only).
     hiddenFromDock: Boolean = false,
-    // macOS-only creation-time EDR swapchain. Ignored by Win/Linux dispatch.
     macOSExtendedDynamicRange: Boolean = false,
+    dynamicRangeMode: WindowDynamicRangeMode = WindowDynamicRangeMode.STANDARD,
     // Parent composition locals to bridge into this window's own ComposeScene
     // (applied above the scene's LocalComposeSceneContext so popups still route
     // into THIS scene). Used by DecoratedDialog so a dialog's content sees the
@@ -354,6 +355,7 @@ internal fun ApplicationScope.openDecoratedWindow(
             initialCompositionLocalContext,
             nativePopupLayers,
             transparent,
+            dynamicRangeMode,
             hotReloadContent,
         )
     }
@@ -377,6 +379,7 @@ internal fun ApplicationScope.openDecoratedWindow(
             initialCompositionLocalContext,
             nativePopupLayers,
             transparent,
+            dynamicRangeMode,
             hotReloadContent,
         )
     }
@@ -387,7 +390,9 @@ internal fun ApplicationScope.openDecoratedWindow(
             macOSStyle = macOSStyle,
             hiddenFromDock = hiddenFromDock,
             fullyTransparent = transparent,
-            extendedDynamicRange = macOSExtendedDynamicRange,
+            extendedDynamicRange =
+                macOSExtendedDynamicRange ||
+                    dynamicRangeMode == WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE,
         )
     host.nativePopupLayers = nativePopupLayers
     host.previewKeyHandler = onPreviewKeyEvent
@@ -632,9 +637,15 @@ private fun ApplicationScope.openDecoratedWindowLinux(
     initialCompositionLocalContext: CompositionLocalContext?,
     nativePopupLayers: Boolean,
     transparent: Boolean,
+    dynamicRangeMode: WindowDynamicRangeMode,
     content: @Composable TaoDecoratedWindowScope.() -> Unit,
 ): TaoWindow {
-    val host = TaoComposeSceneHostLinux(window, fullyTransparent = transparent)
+    val host =
+        TaoComposeSceneHostLinux(
+            window,
+            fullyTransparent = transparent,
+            dynamicRangeMode = dynamicRangeMode,
+        )
     host.nativePopupLayers = nativePopupLayers
     host.previewKeyHandler = onPreviewKeyEvent
     host.keyHandler = onKeyEvent
@@ -1022,6 +1033,7 @@ private fun ApplicationScope.openDecoratedWindowWindows(
     initialCompositionLocalContext: CompositionLocalContext?,
     nativePopupLayers: Boolean,
     transparent: Boolean,
+    dynamicRangeMode: WindowDynamicRangeMode,
     content: @Composable TaoDecoratedWindowScope.() -> Unit,
 ): TaoWindow {
     val host =
@@ -1029,6 +1041,7 @@ private fun ApplicationScope.openDecoratedWindowWindows(
             window,
             fullyTransparent = transparent,
             borderlessChrome = undecorated,
+            dynamicRangeMode = dynamicRangeMode,
         )
     host.nativePopupLayers = nativePopupLayers
     host.previewKeyHandler = onPreviewKeyEvent

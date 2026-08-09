@@ -27,7 +27,11 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import dev.nucleusframework.core.runtime.LinuxDesktopEnvironment
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.tao.GlobalLayoutDirection
+import dev.nucleusframework.window.tao.LinuxTextureFormatModifiers
+import dev.nucleusframework.window.tao.LinuxTextureViewProducerInfo
+import dev.nucleusframework.window.tao.NucleusDrmFormat
 import dev.nucleusframework.window.tao.TaoEventCode
 import dev.nucleusframework.window.tao.TaoModifierMask
 import dev.nucleusframework.window.tao.TaoPointerScrollEvent
@@ -35,6 +39,10 @@ import dev.nucleusframework.window.tao.TaoTouchEvent
 import dev.nucleusframework.window.tao.TaoTrackpadGesture
 import dev.nucleusframework.window.tao.TaoTrackpadPhase
 import dev.nucleusframework.window.tao.TaoWindow
+import dev.nucleusframework.window.tao.TextureViewHostCapabilities
+import dev.nucleusframework.window.tao.TextureViewHostDynamicRange
+import dev.nucleusframework.window.tao.TextureViewHostPresentationState
+import dev.nucleusframework.window.tao.TextureViewHostPixelFormat
 import dev.nucleusframework.window.tao.deco.ResizeFrameDecoration
 import dev.nucleusframework.window.tao.deco.TaoLinuxOverlayController
 import dev.nucleusframework.window.tao.deco.TaoLinuxOverlayControllerImpl
@@ -45,6 +53,7 @@ import dev.nucleusframework.window.tao.event.taoKeyboardModifiers
 import dev.nucleusframework.window.tao.event.taoTypedKeyEvent
 import dev.nucleusframework.window.tao.ffi.NativeTaoBridge
 import dev.nucleusframework.window.tao.ffi.NativeTaoEglBridge
+import dev.nucleusframework.window.tao.ffi.NativeTaoLinuxTextureBridge
 import dev.nucleusframework.window.tao.ffi.NativeTaoLinuxTouchBridge
 import dev.nucleusframework.window.tao.popup.TaoPopupHostLinux
 import dev.nucleusframework.window.tao.popup.TaoPopupSceneLayerLinux
@@ -110,6 +119,7 @@ internal class TaoComposeSceneHostLinux(
     // builds with an ARGB visual for EGL, and this flag starts the clear at
     // alpha 0 so empty client areas show the desktop.
     private val fullyTransparent: Boolean = false,
+    internal val dynamicRangeMode: WindowDynamicRangeMode = WindowDynamicRangeMode.STANDARD,
 ) : AbstractTaoComposeSceneHost() {
     val titleBarHeightDpState: androidx.compose.runtime.MutableState<Float> =
         androidx.compose.runtime.mutableStateOf(0f)
@@ -191,6 +201,15 @@ internal class TaoComposeSceneHostLinux(
      * instead of silently drawing into a dead context.
      */
     val glTextureHostState: MutableState<TaoGlTextureHost?> = mutableStateOf(null)
+    private val textureViewHostCapabilitiesState: MutableState<TextureViewHostCapabilities> =
+        mutableStateOf(TextureViewHostCapabilities.UNAVAILABLE)
+    private var extendedSceneActive: Boolean = false
+    private var sceneFramebufferId: Int = 0
+    private var outputMode: Int = NativeTaoEglBridge.OUTPUT_MODE_SDR
+    private var supportsDmaBufImport: Boolean = false
+    private var supportsAcquireFences: Boolean = false
+    private var textureProducerRenderNode: String? = null
+    private var textureProducerFormats: List<LinuxTextureFormatModifiers> = emptyList()
 
     /**
      * Coroutine drains left for the current frame's swap window — see the
@@ -580,6 +599,7 @@ internal class TaoComposeSceneHostLinux(
                             physH,
                             bufferScale,
                             swapInterval,
+                            dynamicRangeMode == WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE,
                         )
                     require(h != 0L) {
                         "Failed to create EGL context for wl_surface=$nativeWin — libwayland-egl missing?"
@@ -603,10 +623,33 @@ internal class TaoComposeSceneHostLinux(
         val iface = GLAssembledInterface.createFromNativePointers(0L, fnPtr)
         val ctx = DirectContext.makeGLWithInterface(iface)
         directContext = ctx
+        extendedSceneActive = NativeTaoEglBridge.nativeUsesExtendedScene(attachmentHandle)
+        sceneFramebufferId = NativeTaoEglBridge.nativeFramebufferId(attachmentHandle)
+        outputMode = NativeTaoEglBridge.nativeOutputMode(attachmentHandle)
+        supportsDmaBufImport = NativeTaoLinuxTextureBridge.nativeIsDmaBufImportSupported()
+        supportsAcquireFences = NativeTaoLinuxTextureBridge.nativeIsNativeFenceSupported()
+        textureProducerRenderNode =
+            if (supportsDmaBufImport) NativeTaoLinuxTextureBridge.nativeCurrentRenderNode() else null
+        textureProducerFormats =
+            if (supportsDmaBufImport) {
+                buildList {
+                    listOf(NucleusDrmFormat.ARGB8888, NucleusDrmFormat.ABGR16161616F).forEach { format ->
+                        val modifiers =
+                            NativeTaoLinuxTextureBridge.nativeDmaBufModifiers(format)
+                                ?.toList()
+                                .orEmpty()
+                        if (modifiers.isNotEmpty()) add(LinuxTextureFormatModifiers(format, modifiers))
+                    }
+                }
+            } else {
+                emptyList()
+            }
+        updateTextureViewHostCapabilities()
         // Publish the TextureView handle for the fresh EGL context / Skia
         // context pair (see glTextureHostState).
         glTextureHostState.value =
             object : TaoGlTextureHost {
+                override val textureViewHostCapabilities = textureViewHostCapabilitiesState
                 override val directContext: DirectContext = ctx
 
                 // Read live: 0 once the window detached, so a late disposal
@@ -662,6 +705,12 @@ internal class TaoComposeSceneHostLinux(
         // would otherwise hold Skia images on a destroyed context.
         directContext?.let(::releaseGlTextureImports)
         glTextureHostState.value = null
+        textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
+        extendedSceneActive = false
+        sceneFramebufferId = 0
+        outputMode = NativeTaoEglBridge.OUTPUT_MODE_SDR
+        textureProducerRenderNode = null
+        textureProducerFormats = emptyList()
         // The DirectContext is bound to the EGL context being destroyed; the
         // scene itself survives and renders again once [resumeGpu] rebuilds it.
         directContext?.close()
@@ -683,6 +732,7 @@ internal class TaoComposeSceneHostLinux(
         // The redraw gate may have latched while hidden (invalidations with no
         // draw ever arriving); clear it so the re-arm below goes through.
         redrawPending.set(false)
+        updateTextureViewHostCapabilities()
         requestRedrawCoalesced()
     }
 
@@ -1423,9 +1473,11 @@ internal class TaoComposeSceneHostLinux(
         flushingDispatcher.drain()
 
         NativeTaoEglBridge.nativeMakeCurrent(attachmentHandle)
+        ctx.resetGLAll()
         // Coalesced size/scale change is committed here, after the GL context
         // is current — applyPendingNativeResize closes the stale Skia cache.
         applyPendingNativeResize()
+        ctx.resetGLAll()
         updateResizeBurstSwapInterval()
 
         val paintSize = resolvePaintSize()
@@ -1446,6 +1498,7 @@ internal class TaoComposeSceneHostLinux(
         sc.render(surface.canvas.asComposeCanvas(), now)
         applyFrameDecoration(surface.canvas, paintSize.width, paintSize.height)
         surface.flushAndSubmit(syncCpu = false)
+        glTextureHostState.value?.publishTextureReleaseFences()
         NativeTaoEglBridge.nativeReleaseCurrent(attachmentHandle)
         swapThread?.requestSwap()
 
@@ -1494,16 +1547,26 @@ internal class TaoComposeSceneHostLinux(
                 height = paintH,
                 sampleCnt = 0,
                 stencilBits = 8,
-                fbId = 0,
-                fbFormat = FramebufferFormat.GR_GL_RGBA8,
+                fbId = sceneFramebufferId,
+                fbFormat =
+                    if (extendedSceneActive) {
+                        FramebufferFormat.GR_GL_RGBA16F
+                    } else {
+                        FramebufferFormat.GR_GL_RGBA8
+                    },
             )
         val surface =
             Surface.makeFromBackendRenderTarget(
                 context = ctx,
                 rt = rt,
                 origin = SurfaceOrigin.BOTTOM_LEFT,
-                colorFormat = SurfaceColorFormat.RGBA_8888,
-                colorSpace = ColorSpace.sRGB,
+                colorFormat =
+                    if (extendedSceneActive) {
+                        skikoRgbaF16SurfaceColorFormat
+                    } else {
+                        SurfaceColorFormat.RGBA_8888
+                    },
+                colorSpace = if (extendedSceneActive) ColorSpace.sRGBLinear else ColorSpace.sRGB,
             )
         if (surface == null) {
             rt.close()
@@ -1513,6 +1576,56 @@ internal class TaoComposeSceneHostLinux(
         cachedRt = rt
         cachedSurface = surface
         return surface
+    }
+
+    private fun updateTextureViewHostCapabilities() {
+        val handle = attachmentHandle
+        if (handle == 0L) {
+            textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
+            return
+        }
+        val presentedFrames = NativeTaoEglBridge.nativePresentedFrameCount(handle)
+        textureViewHostCapabilitiesState.value =
+            TextureViewHostCapabilities(
+                requestedMode = dynamicRangeMode,
+                actualDynamicRange =
+                    if (extendedSceneActive) {
+                        TextureViewHostDynamicRange.HDR
+                    } else {
+                        TextureViewHostDynamicRange.SDR
+                    },
+                presentationState =
+                    if (presentedFrames > 0L) {
+                        TextureViewHostPresentationState.PRESENTED
+                    } else {
+                        TextureViewHostPresentationState.PENDING
+                    },
+                sdrWhiteLevelNits =
+                    when (outputMode) {
+                        NativeTaoEglBridge.OUTPUT_MODE_SCRGB -> 80f
+                        NativeTaoEglBridge.OUTPUT_MODE_BT2020_PQ -> 203f
+                        else -> null
+                    },
+                maximumLuminanceNits = null,
+                headroom = 1f,
+                generation = NativeTaoEglBridge.nativeOutputGeneration(handle),
+                presentedFrameCount = presentedFrames,
+                outputPixelFormat =
+                    when (outputMode) {
+                        NativeTaoEglBridge.OUTPUT_MODE_SCRGB ->
+                            TextureViewHostPixelFormat.RGBA16_FLOAT_SCRGB
+                        NativeTaoEglBridge.OUTPUT_MODE_BT2020_PQ ->
+                            TextureViewHostPixelFormat.RGB10_A2_BT2020_PQ
+                        else -> TextureViewHostPixelFormat.RGBA8_SRGB
+                    },
+                producerInfo =
+                    LinuxTextureViewProducerInfo(
+                        renderNode = textureProducerRenderNode,
+                        formats = textureProducerFormats,
+                        supportsAcquireFences = supportsAcquireFences,
+                        supportsReleaseFences = supportsAcquireFences,
+                    ),
+            )
     }
 
     /**
@@ -1910,6 +2023,8 @@ internal class TaoComposeSceneHostLinux(
         return object : TaoPopupHostLinux {
             override val parentWindow: TaoWindow get() = outer.window
             override val scale: Float get() = outer.scale
+            override val dynamicRangeMode: WindowDynamicRangeMode get() = outer.dynamicRangeMode
+            override val textureViewHostCapabilities = outer.textureViewHostCapabilitiesState
             override val parentWindowSize: IntSize get() = IntSize(outer.widthPx, outer.heightPx)
             override val workAreaSize: IntSize get() =
                 NativeTaoBridge
@@ -2204,6 +2319,12 @@ internal class TaoComposeSceneHostLinux(
         // scene.close() above released the leases of every live one.
         directContext?.let(::releaseGlTextureImports)
         glTextureHostState.value = null
+        textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
+        extendedSceneActive = false
+        sceneFramebufferId = 0
+        outputMode = NativeTaoEglBridge.OUTPUT_MODE_SDR
+        textureProducerRenderNode = null
+        textureProducerFormats = emptyList()
         directContext?.close()
         directContext = null
         // Clear any input region we may have set while the window was
@@ -2363,14 +2484,17 @@ internal class TaoComposeSceneHostLinux(
                                     renderOwed = false
                                     owed
                                 }
-                            // KWin: drawable advances only after this present.
-                            if (useDrawableSizedPaint) {
-                                dev.nucleusframework.window.tao.dispatch.TaoMainDispatcher
-                                    .dispatch(
-                                        EmptyCoroutineContext,
-                                        Runnable { onDrawablePresented() },
-                                    )
-                            }
+                            // Presentation feedback and output-generation
+                            // changes are consumed on the Tao thread. KWin also
+                            // advances its lagging drawable after this present.
+                            dev.nucleusframework.window.tao.dispatch.TaoMainDispatcher
+                                .dispatch(
+                                    EmptyCoroutineContext,
+                                    Runnable {
+                                        if (useDrawableSizedPaint) onDrawablePresented()
+                                        updateTextureViewHostCapabilities()
+                                    },
+                                )
                             // Catch-up after size change: the buffer matching the
                             // request only exists *after* this swap — paint it
                             // without waiting for more motion (all Wayland DEs).

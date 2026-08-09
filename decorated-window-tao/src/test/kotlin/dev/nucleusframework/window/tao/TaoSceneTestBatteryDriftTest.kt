@@ -41,6 +41,7 @@ class TaoSceneTestBatteryDriftTest {
             TaoKeyboardModifiersDecodeTest::class.java,
             TaoSyntheticMouseWheelEventTest::class.java,
             TaoWheelPinchZoomTest::class.java,
+            TextureViewStreamControllerTest::class.java,
             TaoWindowScrollTest::class.java,
             TaoWindowResizableTest::class.java,
             TaoInteropTransactionTest::class.java,

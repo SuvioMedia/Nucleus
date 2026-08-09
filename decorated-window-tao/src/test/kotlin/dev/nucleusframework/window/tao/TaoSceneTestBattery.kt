@@ -49,6 +49,28 @@ public object TaoSceneTestBattery {
             results += CaseResult(name, failure)
         }
 
+        run("TextureViewStreamControllerTest: submittingNewFrameReleasesSkippedFrame") {
+            TextureViewStreamControllerTest().submittingNewFrameReleasesSkippedFrame()
+        }
+        run("TextureViewStreamControllerTest: acquiredFrameLivesUntilConsumerReleasesIt") {
+            TextureViewStreamControllerTest().acquiredFrameLivesUntilConsumerReleasesIt()
+        }
+        run("TextureViewStreamControllerTest: closingWithCurrentAcquiredFrameReleasesItExactlyOnce") {
+            TextureViewStreamControllerTest().closingWithCurrentAcquiredFrameReleasesItExactlyOnce()
+        }
+        run("TextureViewStreamControllerTest: streamRejectsSecondConsumerAndFrameResubmission") {
+            TextureViewStreamControllerTest().streamRejectsSecondConsumerAndFrameResubmission()
+        }
+        run("TextureViewStreamControllerTest: extendedLinearMetadataKeepsReferenceWhiteSemantic") {
+            TextureViewStreamControllerTest().extendedLinearMetadataKeepsReferenceWhiteSemantic()
+        }
+        run("TextureViewStreamControllerTest: referenceWhiteScalePreservesExtendedLinearSceneUnits") {
+            TextureViewStreamControllerTest().referenceWhiteScalePreservesExtendedLinearSceneUnits()
+        }
+        run("TextureViewStreamControllerTest: referenceWhiteScaleIsIdentityForSrgbOrHostRelativeProducer") {
+            TextureViewStreamControllerTest().referenceWhiteScaleIsIdentityForSrgbOrHostRelativeProducer()
+        }
+
         run("TaoKeyMappingTest: mac layout-aware path maps produced characters over physical position") {
             TaoKeyMappingTest().`mac layout-aware path maps produced characters over physical position`()
         }

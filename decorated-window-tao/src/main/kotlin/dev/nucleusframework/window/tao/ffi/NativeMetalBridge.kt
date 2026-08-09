@@ -313,6 +313,28 @@ internal object NativeMetalBridge {
     @JvmStatic
     external fun nativeViewPtr(handle: Long): Long
 
+    /** Refreshes the active NSScreen/EDR generation. Call on the AppKit thread. */
+    @JvmStatic
+    external fun nativeRefreshOutputCapabilities(handle: Long)
+
+    @JvmStatic
+    external fun nativeIsHdrOutput(handle: Long): Boolean
+
+    @JvmStatic
+    external fun nativeSdrWhiteLevelNits(handle: Long): Float
+
+    @JvmStatic
+    external fun nativeMaximumLuminanceNits(handle: Long): Float
+
+    @JvmStatic
+    external fun nativeHeadroom(handle: Long): Float
+
+    @JvmStatic
+    external fun nativeOutputGeneration(handle: Long): Long
+
+    @JvmStatic
+    external fun nativePresentedFrameCount(handle: Long): Long
+
     /**
      * Updates the layer's drawable size and contentsScale to match a new
      * window size or DPI change.

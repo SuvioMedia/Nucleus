@@ -20,6 +20,7 @@ import dev.nucleusframework.application.TaoNucleusApplicationScope
 import dev.nucleusframework.application.TaoNucleusWindow
 import dev.nucleusframework.window.DecoratedWindowState
 import dev.nucleusframework.window.LocalTitleBarInfo
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.tao.LocalTaoWindow
 import dev.nucleusframework.window.tao.TaoDecoratedWindowScope
 import dev.nucleusframework.window.tao.render.LocalTaoTextSelectionA11yPublisher
@@ -49,6 +50,7 @@ internal object TaoDecoratedWindowAdapter {
         nativePopupLayers: Boolean,
         hiddenFromDock: Boolean,
         macOSExtendedDynamicRange: Boolean,
+        dynamicRangeMode: WindowDynamicRangeMode,
         minimumSize: DpSize?,
         onPreviewKeyEvent: (KeyEvent) -> Boolean,
         onKeyEvent: (KeyEvent) -> Boolean,
@@ -78,6 +80,7 @@ internal object TaoDecoratedWindowAdapter {
                 nativePopupLayers = nativePopupLayers,
                 hiddenFromDock = hiddenFromDock,
                 macOSExtendedDynamicRange = macOSExtendedDynamicRange,
+                dynamicRangeMode = dynamicRangeMode,
                 onPreviewKeyEvent = onPreviewKeyEvent,
                 onKeyEvent = onKeyEvent,
             ) {

@@ -90,6 +90,8 @@ val buildNativeWindows by tasks.registering(Exec::class) {
     inputs.file(file("src/main/native/windows/nucleus_tao_windows_deco.c"))
     inputs.file(file("src/main/native/windows/nucleus_tao_gl.c"))
     inputs.file(file("src/main/native/windows/nucleus_tao_texture.c"))
+    inputs.file(file("src/main/native/windows/nucleus_tao_hdr_scene.cpp"))
+    inputs.file(file("src/main/native/windows/nucleus_tao_hdr_scene.h"))
     outputs.dir(outputDir)
     workingDir(file("src/main/native/windows"))
     commandLine("cmd", "/c", ".\\build.bat")
@@ -115,6 +117,27 @@ val buildNativeLinux by tasks.registering(Exec::class) {
     commandLine("bash", "build.sh")
 }
 
+val windowsAngleRuntimeFiles =
+    listOf(
+        file("src/main/resources/nucleus/native/win32-x64/libEGL.dll"),
+        file("src/main/resources/nucleus/native/win32-x64/libGLESv2.dll"),
+        file("src/main/resources/nucleus/native/win32-aarch64/libEGL.dll"),
+        file("src/main/resources/nucleus/native/win32-aarch64/libGLESv2.dll"),
+    )
+val verifyWindowsAngleRuntime by tasks.registering {
+    description = "Verifies that published Tao artifacts contain the pinned ANGLE runtime."
+    group = "verification"
+    dependsOn(buildNativeWindows)
+    inputs.files(windowsAngleRuntimeFiles)
+    doLast {
+        val missing = windowsAngleRuntimeFiles.filterNot { it.isFile && it.length() > 0L }
+        check(missing.isEmpty()) {
+            "Missing pinned ANGLE runtime files: ${missing.joinToString { it.path }}. " +
+                "Run src/main/native/windows/fetch-angle.sh all before publishing."
+        }
+    }
+}
+
 tasks.processResources {
     dependsOn(buildNativeMacOs)
     dependsOn(buildNativeWindows)
@@ -127,6 +150,10 @@ tasks.configureEach {
         dependsOn(buildNativeWindows)
         dependsOn(buildNativeLinux)
     }
+}
+
+tasks.matching { it.name.startsWith("publish", ignoreCase = true) }.configureEach {
+    dependsOn(verifyWindowsAngleRuntime)
 }
 
 // ── macOS standalone-popup smoke check ──────────────────────────────────────

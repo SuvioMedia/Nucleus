@@ -21,21 +21,20 @@ internal object NativeTaoGlBridge {
     init {
         // ANGLE (libEGL + libGLESv2) backs the Direct3D-11 render path.
         // They ship next to the other Windows native libs but are only
-        // present on win32-*; load libGLESv2 by absolute path FIRST (libEGL
-        // depends on it) so the native `LoadLibraryW("libEGL.dll")` resolves
-        // the already-loaded module by base name.
-        //
-        // libGLESv2 must ALSO sit in libEGL's cache directory: at eglInitialize
-        // ANGLE's libEGL loads libGLESv2 via an absolute path built from its own
-        // module dir (SearchType::ModuleDir). The content-addressed loader gives
-        // each library its own <fingerprint>/ dir, so without this sidecar the
-        // two DLLs land in different dirs and ANGLE can't find libGLESv2.
+        // present on win32-*. Extract libEGL together with libGLESv2 as one
+        // content-addressed runtime set. NativeLibraryLoader gives such sets
+        // precedence over bare-name PATH lookup, preventing an unrelated ANGLE
+        // installation from being mixed into the process. Preload libGLESv2 by
+        // its absolute cache path before libEGL: nucleus_tao_gl later resolves
+        // it by bare name and Windows must return this already-loaded module,
+        // not an older ANGLE installation found on PATH.
         if (System.getProperty("os.name", "").lowercase().contains("win")) {
-            NativeLibraryLoader.load("libGLESv2", NativeTaoGlBridge::class.java)
             NativeLibraryLoader.load(
                 "libEGL",
                 NativeTaoGlBridge::class.java,
+                resourcePrefix = "/nucleus/native",
                 sidecarFiles = listOf("libGLESv2.dll"),
+                preloadSidecars = true,
             )
         }
     }
@@ -56,6 +55,18 @@ internal object NativeTaoGlBridge {
      */
     @JvmStatic
     external fun nativeAttach(hwnd: Long): Long
+
+    /**
+     * Attaches the host and, when requested and supported, replaces ANGLE's
+     * SDR window surface with an FP16 scene texture presented through a
+     * DirectComposition scRGB flip-model swapchain. The regular context stays
+     * alive as the root of the TextureView/overlay GL share group.
+     */
+    @JvmStatic
+    external fun nativeAttachWithDynamicRange(
+        hwnd: Long,
+        extendedDynamicRange: Boolean,
+    ): Long
 
     /**
      * Address of the native GrGLGetProc trampoline routing to ANGLE's
@@ -89,7 +100,7 @@ internal object NativeTaoGlBridge {
     /** Pumps the back-buffer to screen via `eglSwapBuffers` (vsync-paced,
      * inline). Must be invoked **after** `Surface.flushAndSubmit`. */
     @JvmStatic
-    external fun nativePresent(handle: Long)
+    external fun nativePresent(handle: Long): Boolean
 
     /**
      * Presents one frame cleared to [argb]. Used by the fullscreen toggle
@@ -117,6 +128,30 @@ internal object NativeTaoGlBridge {
         handle: Long,
         enabled: Boolean,
     )
+
+    @JvmStatic
+    external fun nativeUsesExtendedScene(handle: Long): Boolean
+
+    @JvmStatic
+    external fun nativeIsHdrOutput(handle: Long): Boolean
+
+    @JvmStatic
+    external fun nativeSdrWhiteLevelNits(handle: Long): Float
+
+    @JvmStatic
+    external fun nativeMaximumLuminanceNits(handle: Long): Float
+
+    @JvmStatic
+    external fun nativeHeadroom(handle: Long): Float
+
+    @JvmStatic
+    external fun nativeOutputGeneration(handle: Long): Long
+
+    @JvmStatic
+    external fun nativePresentedFrameCount(handle: Long): Long
+
+    @JvmStatic
+    external fun nativeAdapterLuid(handle: Long): Long
 
     @JvmStatic
     external fun nativeWidth(handle: Long): Int

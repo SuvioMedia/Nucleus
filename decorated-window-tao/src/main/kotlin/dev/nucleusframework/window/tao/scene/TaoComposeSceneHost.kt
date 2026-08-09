@@ -4,7 +4,9 @@ package dev.nucleusframework.window.tao.scene
 
 import androidx.compose.runtime.BroadcastFrameClock
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.geometry.Offset
@@ -23,7 +25,9 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.tao.GlobalLayoutDirection
+import dev.nucleusframework.window.tao.MacTextureViewProducerInfo
 import dev.nucleusframework.window.tao.MacOSStyle
 import dev.nucleusframework.window.tao.TaoCursorIcon
 import dev.nucleusframework.window.tao.TaoEventCode
@@ -33,6 +37,10 @@ import dev.nucleusframework.window.tao.TaoPointerScrollEvent
 import dev.nucleusframework.window.tao.TaoTrackpadGesture
 import dev.nucleusframework.window.tao.TaoTrackpadPhase
 import dev.nucleusframework.window.tao.TaoWindow
+import dev.nucleusframework.window.tao.TextureViewHostCapabilities
+import dev.nucleusframework.window.tao.TextureViewHostDynamicRange
+import dev.nucleusframework.window.tao.TextureViewHostPresentationState
+import dev.nucleusframework.window.tao.TextureViewHostPixelFormat
 import dev.nucleusframework.window.tao.dispatch.TaoMainDispatcher
 import dev.nucleusframework.window.tao.event.TaoSyntheticMouseWheelEvent
 import dev.nucleusframework.window.tao.event.taoKeyEvent
@@ -166,6 +174,8 @@ internal class TaoComposeSceneHost(
     private var attachmentHandle: Long = 0
     private var nsViewHandle: Long = 0
     private var directContext: DirectContext? = null
+    private val textureViewHostCapabilitiesState: MutableState<TextureViewHostCapabilities> =
+        mutableStateOf(TextureViewHostCapabilities.UNAVAILABLE)
     private var scene: ComposeScene? = null
 
     /** Parent locals bridged via [setSceneCompositionLocalContext]; applied to the scene once created. */
@@ -305,6 +315,8 @@ internal class TaoComposeSceneHost(
         // The Skia Metal DirectContext is thread-affine: create it on the render
         // thread that will use it for every frame's GPU encode + present.
         directContext = runOnRenderThread { DirectContext.makeMetal(devicePtr, queuePtr) }
+        NativeMetalBridge.nativeRefreshOutputCapabilities(handle)
+        updateTextureViewHostCapabilities()
 
         scale = initialMacOsScaleFactor(window)
 
@@ -825,6 +837,7 @@ internal class TaoComposeSceneHost(
         val outer = this
         return metalTextureHostCache.get(attachmentHandle, directContext) { device, commandQueue, nativeView, ctx ->
             object : TaoMetalTextureHost {
+                override val textureViewHostCapabilities = textureViewHostCapabilitiesState
                 override val metalDevicePtr: Long = device
                 override val metalCommandQueuePtr: Long = commandQueue
                 override val nativeViewPtr: Long = nativeView
@@ -1275,6 +1288,7 @@ internal class TaoComposeSceneHost(
         val sc = scene ?: return
         val ctx = directContext ?: return
         if (attachmentHandle == 0L || widthPx <= 0 || heightPx <= 0) return
+        NativeMetalBridge.nativeRefreshOutputCapabilities(handle)
 
         // Minimized: nothing is visible. Drop the frame before recording +
         // advancing the frame clock — that parks Compose animations (no
@@ -1357,6 +1371,7 @@ internal class TaoComposeSceneHost(
             tx.performTransaction()
             if (!tx.isInteropActive) rendererIsInteropActive = false
         }
+        updateTextureViewHostCapabilities()
     }
 
     /**
@@ -1407,6 +1422,7 @@ internal class TaoComposeSceneHost(
         val sc = scene ?: return
         val ctx = directContext ?: return
         if (attachmentHandle == 0L || widthPx <= 0 || heightPx <= 0) return
+        NativeMetalBridge.nativeRefreshOutputCapabilities(attachmentHandle)
         val mainClear = if (glassBackgroundState.value) 0 else clearColorArgbState.value
         val mainPicture = recordSceneToPicture(sc, widthPx, heightPx)
         val popupSurfaces = recordPopupSurfaces()
@@ -1426,6 +1442,53 @@ internal class TaoComposeSceneHost(
             }
             replayPopups(popupSurfaces)
         }
+        updateTextureViewHostCapabilities()
+    }
+
+    private fun updateTextureViewHostCapabilities() {
+        val handle = attachmentHandle
+        if (handle == 0L) {
+            textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
+            return
+        }
+        val presentedFrames = NativeMetalBridge.nativePresentedFrameCount(handle)
+        textureViewHostCapabilitiesState.value =
+            TextureViewHostCapabilities(
+                requestedMode =
+                    if (extendedDynamicRange) {
+                        WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE
+                    } else {
+                        WindowDynamicRangeMode.STANDARD
+                    },
+                actualDynamicRange =
+                    if (NativeMetalBridge.nativeIsHdrOutput(handle)) {
+                        TextureViewHostDynamicRange.HDR
+                    } else {
+                        TextureViewHostDynamicRange.SDR
+                    },
+                presentationState =
+                    if (presentedFrames > 0L) {
+                        TextureViewHostPresentationState.PRESENTED
+                    } else {
+                        TextureViewHostPresentationState.PENDING
+                    },
+                sdrWhiteLevelNits = NativeMetalBridge.nativeSdrWhiteLevelNits(handle),
+                maximumLuminanceNits = NativeMetalBridge.nativeMaximumLuminanceNits(handle),
+                headroom = NativeMetalBridge.nativeHeadroom(handle),
+                generation = NativeMetalBridge.nativeOutputGeneration(handle),
+                presentedFrameCount = presentedFrames,
+                outputPixelFormat =
+                    if (extendedDynamicRange) {
+                        TextureViewHostPixelFormat.RGBA16_FLOAT_SCRGB
+                    } else {
+                        TextureViewHostPixelFormat.RGBA8_SRGB
+                    },
+                producerInfo =
+                    MacTextureViewProducerInfo(
+                        device = NativeMetalBridge.nativeDevicePtr(handle),
+                        commandQueue = NativeMetalBridge.nativeQueuePtr(handle),
+                    ),
+            )
     }
 
     fun detach() {
@@ -1443,6 +1506,7 @@ internal class TaoComposeSceneHost(
         scene = null
         // Drop the TextureView handle before the context it points at dies.
         metalTextureHostCache.invalidate()
+        textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
         // Close the DirectContext on its owning thread (FIFO after any in-flight
         // replay), then shut the render thread down.
         val ctx = directContext

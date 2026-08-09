@@ -89,6 +89,8 @@ typedef void         *EGLSurface;
 typedef void         *EGLImageKHR;
 typedef void         *EGLSyncKHR;
 typedef void         *EGLClientBuffer;
+typedef void         *EGLDeviceEXT;
+typedef intptr_t      EGLAttrib;
 typedef int           EGLBoolean;
 typedef int           EGLint;
 typedef unsigned int  EGLenum;
@@ -134,6 +136,9 @@ typedef float         GLfloat;
 #define EGL_SYNC_NATIVE_FENCE_FD_ANDROID     0x3145
 #define EGL_NO_NATIVE_FENCE_FD_ANDROID       (-1)
 #define EGL_NO_SYNC_KHR                      ((EGLSyncKHR) 0)
+#define EGL_DEVICE_EXT                       0x322C
+#define EGL_DRM_DEVICE_FILE_EXT              0x3233
+#define EGL_DRM_RENDER_NODE_FILE_EXT         0x3377
 
 #define GL_NO_ERROR                          0
 #define GL_TEXTURE_2D                        0x0DE1
@@ -203,6 +208,11 @@ typedef EGLSyncKHR  (*PFN_eglCreateSyncKHR)(EGLDisplay, EGLenum, const EGLint *)
 typedef EGLBoolean  (*PFN_eglDestroySyncKHR)(EGLDisplay, EGLSyncKHR);
 typedef EGLint      (*PFN_eglWaitSyncKHR)(EGLDisplay, EGLSyncKHR, EGLint);
 typedef EGLint      (*PFN_eglDupNativeFenceFDANDROID)(EGLDisplay, EGLSyncKHR);
+typedef EGLBoolean  (*PFN_eglQueryDisplayAttribEXT)(EGLDisplay, EGLint, EGLAttrib *);
+typedef const char *(*PFN_eglQueryDeviceStringEXT)(EGLDeviceEXT, EGLint);
+typedef EGLBoolean  (*PFN_eglQueryDmaBufFormatsEXT)(EGLDisplay, EGLint, EGLint *, EGLint *);
+typedef EGLBoolean  (*PFN_eglQueryDmaBufModifiersEXT)(
+    EGLDisplay, EGLint, EGLint, uint64_t *, EGLBoolean *, EGLint *);
 
 typedef void   (*PFN_glEGLImageTargetTexture2DOES)(GLenum, EGLImageKHR);
 typedef void   (*PFN_glGenTextures)(GLsizei, GLuint *);
@@ -242,6 +252,10 @@ static PFN_eglCreateSyncKHR             p_eglCreateSyncKHR         = NULL;
 static PFN_eglDestroySyncKHR            p_eglDestroySyncKHR        = NULL;
 static PFN_eglWaitSyncKHR               p_eglWaitSyncKHR           = NULL;
 static PFN_eglDupNativeFenceFDANDROID   p_eglDupNativeFenceFDANDROID = NULL;
+static PFN_eglQueryDisplayAttribEXT     p_eglQueryDisplayAttribEXT = NULL;
+static PFN_eglQueryDeviceStringEXT      p_eglQueryDeviceStringEXT = NULL;
+static PFN_eglQueryDmaBufFormatsEXT     p_eglQueryDmaBufFormatsEXT = NULL;
+static PFN_eglQueryDmaBufModifiersEXT   p_eglQueryDmaBufModifiersEXT = NULL;
 
 static PFN_glEGLImageTargetTexture2DOES p_glEGLImageTargetTexture2DOES = NULL;
 static PFN_glGenTextures                p_glGenTextures            = NULL;
@@ -341,6 +355,10 @@ static int resolve_entry_points_locked(void) {
     LOAD_PROC(eglDestroySyncKHR);
     LOAD_PROC(eglWaitSyncKHR);
     LOAD_PROC(eglDupNativeFenceFDANDROID);
+    LOAD_PROC(eglQueryDisplayAttribEXT);
+    LOAD_PROC(eglQueryDeviceStringEXT);
+    LOAD_PROC(eglQueryDmaBufFormatsEXT);
+    LOAD_PROC(eglQueryDmaBufModifiersEXT);
     LOAD_PROC(glEGLImageTargetTexture2DOES);
     LOAD_PROC(glGenTextures);
     LOAD_PROC(glDeleteTextures);
@@ -466,6 +484,8 @@ static int fourcc_bytes_per_pixel(int fourcc) {
         case 0x34324142u: /* BA24 — DRM_FORMAT_BGRA8888 */
         case 0x34325842u: /* BX24 — DRM_FORMAT_BGRX8888 */
             return 4;
+        case 0x48344241u: /* AB4H — DRM_FORMAT_ABGR16161616F */
+            return 8;
         case 0x20203852u: /* R8   — DRM_FORMAT_R8, a luma or chroma plane */
             return 1;
         default:
@@ -744,6 +764,106 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoLinuxTextureBridge_nativeIsDma
     return has_extension(display, "EGL_EXT_image_dma_buf_import") ? JNI_TRUE : JNI_FALSE;
 }
 
+/** Render node backing the EGLDisplay current on this thread. */
+JNIEXPORT jstring JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoLinuxTextureBridge_nativeCurrentRenderNode(
+        JNIEnv *env, jclass clazz) {
+    (void) clazz;
+    if (!resolve_entry_points() || !p_eglQueryDisplayAttribEXT || !p_eglQueryDeviceStringEXT) {
+        return NULL;
+    }
+    EGLDisplay display = (EGLDisplay) nucleus_tao_egl_current_display();
+    if (display == EGL_NO_DISPLAY) return NULL;
+    EGLAttrib value = 0;
+    if (p_eglQueryDisplayAttribEXT(display, EGL_DEVICE_EXT, &value) != EGL_TRUE || value == 0) {
+        return NULL;
+    }
+    EGLDeviceEXT device = (EGLDeviceEXT) (uintptr_t) value;
+    const char *path = p_eglQueryDeviceStringEXT(device, EGL_DRM_RENDER_NODE_FILE_EXT);
+    /* Older Mesa exposes only EGL_EXT_device_drm. Do not advertise a primary
+     * card node as a render node: producers use this value for exact GPU affinity. */
+    if (path == NULL) path = p_eglQueryDeviceStringEXT(device, EGL_DRM_DEVICE_FILE_EXT);
+    if (path == NULL || strstr(path, "renderD") == NULL) return NULL;
+    return (*env)->NewStringUTF(env, path);
+}
+
+static int current_display_supports_format(EGLDisplay display, EGLint fourcc) {
+    if (!p_eglQueryDmaBufFormatsEXT) return 1;
+    EGLint count = 0;
+    if (p_eglQueryDmaBufFormatsEXT(display, 0, NULL, &count) != EGL_TRUE || count <= 0) {
+        return 0;
+    }
+    EGLint *formats = (EGLint *) calloc((size_t) count, sizeof(EGLint));
+    if (formats == NULL) return 0;
+    EGLint written = 0;
+    const EGLBoolean queried = p_eglQueryDmaBufFormatsEXT(display, count, formats, &written);
+    int supported = 0;
+    if (queried == EGL_TRUE) {
+        for (EGLint i = 0; i < written; i++) {
+            if (formats[i] == fourcc) {
+                supported = 1;
+                break;
+            }
+        }
+    }
+    free(formats);
+    return supported;
+}
+
+/** Non-external-only modifiers accepted for [fourcc] by the current EGLDisplay. */
+JNIEXPORT jlongArray JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoLinuxTextureBridge_nativeDmaBufModifiers(
+        JNIEnv *env, jclass clazz, jint fourcc) {
+    (void) clazz;
+    if (!resolve_entry_points()) return NULL;
+    EGLDisplay display = (EGLDisplay) nucleus_tao_egl_current_display();
+    if (display == EGL_NO_DISPLAY ||
+        !has_extension(display, "EGL_EXT_image_dma_buf_import") ||
+        !current_display_supports_format(display, (EGLint) fourcc)) {
+        return (*env)->NewLongArray(env, 0);
+    }
+
+    if (!p_eglQueryDmaBufModifiersEXT ||
+        !has_extension(display, "EGL_EXT_image_dma_buf_import_modifiers")) {
+        jlongArray implicit = (*env)->NewLongArray(env, 1);
+        if (implicit == NULL) return NULL;
+        const jlong value = (jlong) NUCLEUS_DRM_FORMAT_MOD_INVALID;
+        (*env)->SetLongArrayRegion(env, implicit, 0, 1, &value);
+        return implicit;
+    }
+
+    EGLint count = 0;
+    if (p_eglQueryDmaBufModifiersEXT(display, (EGLint) fourcc, 0, NULL, NULL, &count) != EGL_TRUE ||
+        count <= 0) {
+        return (*env)->NewLongArray(env, 0);
+    }
+    uint64_t *modifiers = (uint64_t *) calloc((size_t) count, sizeof(uint64_t));
+    EGLBoolean *external_only = (EGLBoolean *) calloc((size_t) count, sizeof(EGLBoolean));
+    jlong *accepted = (jlong *) calloc((size_t) count, sizeof(jlong));
+    if (modifiers == NULL || external_only == NULL || accepted == NULL) {
+        free(modifiers);
+        free(external_only);
+        free(accepted);
+        return NULL;
+    }
+    EGLint written = 0;
+    EGLint accepted_count = 0;
+    if (p_eglQueryDmaBufModifiersEXT(
+            display, (EGLint) fourcc, count, modifiers, external_only, &written) == EGL_TRUE) {
+        for (EGLint i = 0; i < written; i++) {
+            if (external_only[i] == EGL_FALSE) accepted[accepted_count++] = (jlong) modifiers[i];
+        }
+    }
+    jlongArray result = (*env)->NewLongArray(env, accepted_count);
+    if (result != NULL && accepted_count > 0) {
+        (*env)->SetLongArrayRegion(env, result, 0, accepted_count, accepted);
+    }
+    free(modifiers);
+    free(external_only);
+    free(accepted);
+    return result;
+}
+
 /* ── Acquire fences ──────────────────────────────────────────────────────
  *
  * The default contract is "finish your writes before you signal the frame",
@@ -805,6 +925,47 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoLinuxTextureBridge_nativeWaitF
     const EGLBoolean waited = p_eglWaitSyncKHR(display, sync, 0) == EGL_TRUE;
     p_eglDestroySyncKHR(display, sync);
     return waited ? JNI_TRUE : JNI_FALSE;
+}
+
+/**
+ * Exports a sync_file that signals after every GL command submitted on the
+ * current consumer context. This is called only after Skia flushAndSubmit, so
+ * the fence covers the DMA-BUF sampling itself, not merely the acquire wait.
+ *
+ * A synchronous glFinish fallback intentionally returns -1: no fence is needed
+ * once every read has completed, while the producer still gets the exact same
+ * safe-to-reuse guarantee.
+ */
+JNIEXPORT jint JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoLinuxTextureBridge_nativeCreateReleaseFence(
+        JNIEnv *env, jclass clazz) {
+    (void) env; (void) clazz;
+    if (!resolve_entry_points()) return -1;
+    EGLDisplay display = (EGLDisplay) nucleus_tao_egl_current_display();
+    if (display == EGL_NO_DISPLAY || nucleus_tao_egl_current_context() == NULL) return -1;
+    if (!p_eglCreateSyncKHR || !p_eglDestroySyncKHR ||
+        !p_eglDupNativeFenceFDANDROID ||
+        !has_extension(display, "EGL_ANDROID_native_fence_sync")) {
+        if (p_glFinish) p_glFinish();
+        return -1;
+    }
+
+    const EGLint attrs[] = {
+        EGL_SYNC_NATIVE_FENCE_FD_ANDROID, EGL_NO_NATIVE_FENCE_FD_ANDROID, EGL_NONE
+    };
+    EGLSyncKHR sync = p_eglCreateSyncKHR(display, EGL_SYNC_NATIVE_FENCE_ANDROID, attrs);
+    if (sync == EGL_NO_SYNC_KHR) {
+        if (p_glFinish) p_glFinish();
+        return -1;
+    }
+    if (p_glFlush) p_glFlush();
+    const int fd = p_eglDupNativeFenceFDANDROID(display, sync);
+    p_eglDestroySyncKHR(display, sync);
+    if (fd == EGL_NO_NATIVE_FENCE_FD_ANDROID) {
+        if (p_glFinish) p_glFinish();
+        return -1;
+    }
+    return (jint) fd;
 }
 
 /**
