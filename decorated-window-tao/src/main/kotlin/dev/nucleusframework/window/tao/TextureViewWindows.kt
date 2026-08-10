@@ -22,6 +22,7 @@ import org.jetbrains.skia.SurfaceOrigin
 /** `GL_TEXTURE_2D` / `GR_GL_RGBA8` — Skia's GL backend constants. */
 private const val GL_TEXTURE_2D = 0x0DE1
 private const val GR_GL_RGBA8 = 0x8058
+private const val GR_GL_RGBA16F = 0x881A
 
 /**
  * Windows implementation of [TextureView]: the producer's D3D11 texture is
@@ -58,6 +59,7 @@ internal fun WindowsTextureView(
             Rect(0f, 0f, source.widthPx.toFloat(), source.heightPx.toFloat())
         }
     val sampling = remember(filterQuality) { samplingFor(filterQuality) }
+    val colorPaint = rememberExternalTextureColorPaint(source.colorInfo)
     Box(
         modifier.drawBehind {
             // Snapshot read of the frame stamp: markFrameAvailable()
@@ -83,7 +85,7 @@ internal fun WindowsTextureView(
                     host.requestRedraw()
                 }
             }
-            drawExternalTexture(imported.image, srcRect, contentScale, alignment, sampling)
+            drawExternalTexture(imported.image, srcRect, contentScale, alignment, sampling, colorPaint)
         },
     )
 }
@@ -161,6 +163,15 @@ private fun importTexture(
         )
     if (handle <= 0L) return null
     val texId = NativeTaoTextureBridge.nativeGlTextureId(handle)
+    val pixelFormat = NativeTaoTextureBridge.nativePixelFormat(handle)
+    val glFormat =
+        if (pixelFormat == NativeTaoTextureBridge.FORMAT_RGBA16_FLOAT) GR_GL_RGBA16F else GR_GL_RGBA8
+    val colorType =
+        if (pixelFormat == NativeTaoTextureBridge.FORMAT_RGBA16_FLOAT) {
+            ColorType.RGBA_F16
+        } else {
+            ColorType.RGBA_8888
+        }
     val image =
         runCatching {
             Image.adoptTextureFrom(
@@ -171,10 +182,10 @@ private fun importTexture(
                     false,
                     texId,
                     GL_TEXTURE_2D,
-                    GR_GL_RGBA8,
+                    glFormat,
                 ),
                 SurfaceOrigin.TOP_LEFT,
-                ColorType.RGBA_8888,
+                colorType,
             )
         }.getOrNull()
     if (image == null) {

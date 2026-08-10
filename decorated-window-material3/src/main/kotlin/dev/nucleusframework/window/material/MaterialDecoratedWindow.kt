@@ -15,6 +15,7 @@ import dev.nucleusframework.application.NucleusDecoratedWindowScope
 import dev.nucleusframework.window.AwtDecoratedWindowScope
 import dev.nucleusframework.window.DecoratedWindow
 import dev.nucleusframework.window.NucleusDecoratedWindowTheme
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.styling.TitleBarStyle
 import kotlin.internal.LowPriorityInOverloadResolution
 import dev.nucleusframework.application.DecoratedWindow as NucleusDecoratedWindow
@@ -96,6 +97,117 @@ fun NucleusApplicationScope.MaterialDecoratedWindow(
     enabled: Boolean = true,
     focusable: Boolean = true,
     alwaysOnTop: Boolean = false,
+    nativePopupLayers: Boolean = false,
+    hiddenFromDock: Boolean = false,
+    minimumSize: DpSize? = null,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
+    dynamicRangeMode: WindowDynamicRangeMode = WindowDynamicRangeMode.STANDARD,
+    titleBarStyle: TitleBarStyle? = null,
+    content: @Composable NucleusDecoratedWindowScope.() -> Unit,
+) {
+    @Suppress("DEPRECATION")
+    MaterialDecoratedWindow(
+        onCloseRequest = onCloseRequest,
+        state = state,
+        visible = visible,
+        title = title,
+        icon = icon,
+        resizable = resizable,
+        enabled = enabled,
+        focusable = focusable,
+        alwaysOnTop = alwaysOnTop,
+        nativePopupLayers = nativePopupLayers,
+        hiddenFromDock = hiddenFromDock,
+        macOSExtendedDynamicRange = false,
+        minimumSize = minimumSize,
+        onPreviewKeyEvent = onPreviewKeyEvent,
+        onKeyEvent = onKeyEvent,
+        dynamicRangeMode = dynamicRangeMode,
+        titleBarStyle = titleBarStyle,
+        content = content,
+    )
+}
+
+/** Deprecated binary-compatible forwarding overload retained for one fork release. */
+@Deprecated(
+    message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
+    replaceWith =
+        ReplaceWith(
+            "MaterialDecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
+)
+@Suppress("FunctionNaming", "LongParameterList")
+@Composable
+fun NucleusApplicationScope.MaterialDecoratedWindow(
+    onCloseRequest: () -> Unit,
+    state: WindowState = rememberWindowState(),
+    visible: Boolean = true,
+    title: String = "",
+    icon: Painter? = null,
+    resizable: Boolean = true,
+    enabled: Boolean = true,
+    focusable: Boolean = true,
+    alwaysOnTop: Boolean = false,
+    nativePopupLayers: Boolean = false,
+    hiddenFromDock: Boolean = false,
+    macOSExtendedDynamicRange: Boolean,
+    minimumSize: DpSize? = null,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
+    titleBarStyle: TitleBarStyle? = null,
+    content: @Composable NucleusDecoratedWindowScope.() -> Unit,
+) {
+    @Suppress("DEPRECATION")
+    MaterialDecoratedWindow(
+        onCloseRequest = onCloseRequest,
+        state = state,
+        visible = visible,
+        title = title,
+        icon = icon,
+        resizable = resizable,
+        enabled = enabled,
+        focusable = focusable,
+        alwaysOnTop = alwaysOnTop,
+        nativePopupLayers = nativePopupLayers,
+        hiddenFromDock = hiddenFromDock,
+        macOSExtendedDynamicRange = macOSExtendedDynamicRange,
+        minimumSize = minimumSize,
+        onPreviewKeyEvent = onPreviewKeyEvent,
+        onKeyEvent = onKeyEvent,
+        dynamicRangeMode =
+            if (macOSExtendedDynamicRange) {
+                WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE
+            } else {
+                WindowDynamicRangeMode.STANDARD
+            },
+        titleBarStyle = titleBarStyle,
+        content = content,
+    )
+}
+
+/** Compatibility overload retained for one fork release. */
+@Deprecated(
+    message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
+    replaceWith =
+        ReplaceWith(
+            "MaterialDecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
+)
+@Suppress("FunctionNaming", "LongParameterList")
+@Composable
+fun NucleusApplicationScope.MaterialDecoratedWindow(
+    onCloseRequest: () -> Unit,
+    state: WindowState = rememberWindowState(),
+    visible: Boolean = true,
+    title: String = "",
+    icon: Painter? = null,
+    resizable: Boolean = true,
+    enabled: Boolean = true,
+    focusable: Boolean = true,
+    alwaysOnTop: Boolean = false,
     // Materialise Compose Popup layers as native transparent windows
     // (NSPanel / WS_POPUP HWND / Tao popup window on Linux) so menus can
     // extend past the window bounds. Honoured by the Tao backend; ignored by AWT.
@@ -104,13 +216,11 @@ fun NucleusApplicationScope.MaterialDecoratedWindow(
     // focusable (Tao backend; on Linux effective on X11/XWayland only).
     // No-op on AWT.
     hiddenFromDock: Boolean = false,
-    // macOS/Tao: render the window through a half-float extended-linear sRGB
-    // swapchain so TextureView can present HDR/EDR values without clamping.
-    // Creation-time; ignored by AWT and non-macOS Tao backends.
-    macOSExtendedDynamicRange: Boolean = false,
+    macOSExtendedDynamicRange: Boolean,
     minimumSize: DpSize? = null,
     onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
     onKeyEvent: (KeyEvent) -> Boolean = { false },
+    dynamicRangeMode: WindowDynamicRangeMode,
     titleBarStyle: TitleBarStyle? = null,
     content: @Composable NucleusDecoratedWindowScope.() -> Unit,
 ) {
@@ -139,6 +249,7 @@ fun NucleusApplicationScope.MaterialDecoratedWindow(
             nativePopupLayers = nativePopupLayers,
             hiddenFromDock = hiddenFromDock,
             macOSExtendedDynamicRange = macOSExtendedDynamicRange,
+            dynamicRangeMode = dynamicRangeMode,
             minimumSize = minimumSize,
             onPreviewKeyEvent = onPreviewKeyEvent,
             onKeyEvent = onKeyEvent,

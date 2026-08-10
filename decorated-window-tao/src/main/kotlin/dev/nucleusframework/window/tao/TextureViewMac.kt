@@ -129,6 +129,7 @@ internal fun MacTextureView(
             Rect(0f, 0f, imported.widthPx.toFloat(), imported.heightPx.toFloat())
         }
     val sampling = remember(filterQuality) { samplingFor(filterQuality) }
+    val colorPaint = rememberExternalTextureColorPaint(source.colorInfo)
     Box(
         modifier.drawBehind {
             // Read the completion stamp so an asynchronously prepared snapshot invalidates only
@@ -140,7 +141,7 @@ internal fun MacTextureView(
             val stamp = controller?.frameStamp?.longValue ?: 0L
             val image =
                 imported.snapshot(controller, stamp, invalidateSnapshot) ?: return@drawBehind
-            drawExternalTexture(image, srcRect, contentScale, alignment, sampling)
+            drawExternalTexture(image, srcRect, contentScale, alignment, sampling, colorPaint)
         },
     )
 }

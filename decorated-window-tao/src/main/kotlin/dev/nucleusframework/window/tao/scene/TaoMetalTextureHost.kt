@@ -1,7 +1,10 @@
 package dev.nucleusframework.window.tao.scene
 
 import androidx.compose.runtime.ProvidableCompositionLocal
+import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
+import dev.nucleusframework.window.tao.TextureViewHostCapabilities
+import dev.nucleusframework.window.tao.UnavailableTextureViewHostCapabilitiesState
 import dev.nucleusframework.window.tao.ffi.NativeMetalBridge
 import org.jetbrains.skia.DirectContext
 
@@ -23,6 +26,9 @@ import org.jetbrains.skia.DirectContext
  * [runOnRenderThread] (Skia's Metal context is thread-affine).
  */
 internal interface TaoMetalTextureHost {
+    val textureViewHostCapabilities: State<TextureViewHostCapabilities>
+        get() = UnavailableTextureViewHostCapabilitiesState
+
     /** `id<MTLDevice>` [directContext] renders with. */
     val metalDevicePtr: Long
 

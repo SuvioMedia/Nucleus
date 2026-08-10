@@ -288,6 +288,12 @@ typedef struct {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     NSView *view;
+    BOOL extended_dynamic_range;
+    NSInteger screen_number;
+    float output_headroom;
+    float output_maximum_nits;
+    _Atomic uint64_t output_generation;
+    _Atomic uint64_t presented_frames;
     // 0 = normal; 1 = inside an AppKit fullscreen transition. Render path
     // skips nextDrawable while non-zero so we don't block on a paused
     // swapchain (Apple holds drawables for the duration of the animation).
@@ -328,6 +334,40 @@ typedef struct {
 } NucleusTaoMetalAttachment;
 
 #define HANDLE_OF(ptr) ((NucleusTaoMetalAttachment *)(uintptr_t)(ptr))
+
+// Extended-linear sRGB uses the nominal sRGB reference white. EDR headroom is
+// relative to this value; NSScreen exposes the ratio, not an absolute nit value.
+#define NUCLEUS_SRGB_REFERENCE_WHITE_NITS 80.0f
+
+/* Refreshes the EDR facts that belong to the view's current NSScreen. This is
+ * deliberately called by Kotlin on the AppKit thread before submitting a
+ * frame; querying NSScreen from the Metal render thread would require a
+ * render->main sync hop while the main thread is waiting for replay. */
+static void refreshOutputCapabilities(NucleusTaoMetalAttachment *att) {
+    if (att == NULL || att->view == nil) return;
+    NSScreen *screen = att->view.window.screen ?: [NSScreen mainScreen];
+    NSInteger screenNumber = 0;
+    float headroom = 1.0f;
+    float maximumNits = NUCLEUS_SRGB_REFERENCE_WHITE_NITS;
+    if (screen != nil) {
+        NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
+        if (number != nil) screenNumber = number.integerValue;
+        if (@available(macOS 10.15, *)) {
+            CGFloat current = screen.maximumExtendedDynamicRangeColorComponentValue;
+            CGFloat potential = screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
+            headroom = (float)MAX(1.0, current);
+            maximumNits = NUCLEUS_SRGB_REFERENCE_WHITE_NITS * (float)MAX(1.0, potential);
+        }
+    }
+    if (att->screen_number != screenNumber || att->output_headroom != headroom ||
+        att->output_maximum_nits != maximumNits) {
+        att->screen_number = screenNumber;
+        att->output_headroom = headroom;
+        att->output_maximum_nits = maximumNits;
+        atomic_fetch_add(&att->output_generation, 1);
+        atomic_store(&att->presented_frames, 0);
+    }
+}
 
 // Converts a CVTimeStamp mach host-time to the CACurrentMediaTime() seconds base
 // expected by -[MTLCommandBuffer presentDrawable:atTime:].
@@ -1212,6 +1252,11 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
     att->device = device;
     att->queue  = [device newCommandQueue];
     att->view   = view;
+    att->extended_dynamic_range = useExtendedDynamicRange;
+    att->output_headroom = 1.0f;
+    att->output_maximum_nits = NUCLEUS_SRGB_REFERENCE_WHITE_NITS;
+    atomic_store(&att->output_generation, 1);
+    atomic_store(&att->presented_frames, 0);
 
     // Install fullscreen observer so the CAMetalLayer wiring survives an
     // AppKit toggleFullScreen: transition. We hang the attachment pointer
@@ -1231,6 +1276,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
     };
     if ([NSThread isMainThread]) installObserver();
     else                          dispatch_sync(dispatch_get_main_queue(), installObserver);
+    refreshOutputCapabilities(att);
 
     NTLOG("nativeAttach done att=%p layer=%p device=%p", att, att->layer, att->device);
     return (jlong)(uintptr_t)att;
@@ -2086,6 +2132,65 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeViewPtr(
 }
 
 JNIEXPORT void JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeRefreshOutputCapabilities(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    if (handle == 0) return;
+    NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
+    if ([NSThread isMainThread]) {
+        refreshOutputCapabilities(att);
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), ^{ refreshOutputCapabilities(att); });
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeIsHdrOutput(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    if (handle == 0) return JNI_FALSE;
+    NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
+    return att->extended_dynamic_range && att->output_headroom > 1.0f ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeSdrWhiteLevelNits(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz; (void) handle;
+    return NUCLEUS_SRGB_REFERENCE_WHITE_NITS;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeMaximumLuminanceNits(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    return handle == 0
+        ? NUCLEUS_SRGB_REFERENCE_WHITE_NITS
+        : HANDLE_OF(handle)->output_maximum_nits;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeHeadroom(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    return handle == 0 ? 1.0f : HANDLE_OF(handle)->output_headroom;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeOutputGeneration(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    return handle == 0 ? 0 : (jlong)atomic_load(&HANDLE_OF(handle)->output_generation);
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativePresentedFrameCount(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    return handle == 0 ? 0 : (jlong)atomic_load(&HANDLE_OF(handle)->presented_frames);
+}
+
+JNIEXPORT void JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeResize(
         JNIEnv *env, jclass clazz, jlong handle, jint widthPx, jint heightPx, jfloat scale) {
     if (handle == 0) return;
@@ -2180,6 +2285,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativePresent(
             [commandBuffer presentDrawable:drawable];
         }
         [commandBuffer commit];
+        atomic_fetch_add(&att->presented_frames, 1);
     }
 }
 
@@ -2340,6 +2446,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativePresentWithInte
             }
 
             [CATransaction commit];
+            atomic_fetch_add(&att->presented_frames, 1);
         }
     };
 

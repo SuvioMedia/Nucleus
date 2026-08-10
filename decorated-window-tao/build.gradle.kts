@@ -70,9 +70,9 @@ val buildNativeMacOs by tasks.registering(Exec::class) {
     description = "Compiles the Rust JNI bridge into a macOS dylib (arm64 + x86_64)"
     group = "build"
     val outputDir = file("src/main/resources/nucleus/native")
-    val checkFile = File(outputDir, "darwin-aarch64/libnucleus_tao.dylib")
-    onlyIf { Os.isFamily(Os.FAMILY_MAC) && !checkFile.exists() }
+    onlyIf { Os.isFamily(Os.FAMILY_MAC) }
     inputs.dir(file("src/main/native/src"))
+    inputs.dir(file("src/main/native/macos"))
     inputs.file(file("src/main/native/Cargo.toml"))
     outputs.dir(outputDir)
     workingDir(file("src/main/native/macos"))
@@ -83,13 +83,10 @@ val buildNativeWindows by tasks.registering(Exec::class) {
     description = "Compiles the Rust JNI bridge + WGL/Deco helpers into Windows DLLs"
     group = "build"
     val outputDir = file("src/main/resources/nucleus/native")
-    val checkFile = File(outputDir, "win32-x64/nucleus_tao.dll")
-    onlyIf { Os.isFamily(Os.FAMILY_WINDOWS) && !checkFile.exists() }
+    onlyIf { Os.isFamily(Os.FAMILY_WINDOWS) }
     inputs.dir(file("src/main/native/src"))
+    inputs.dir(file("src/main/native/windows"))
     inputs.file(file("src/main/native/Cargo.toml"))
-    inputs.file(file("src/main/native/windows/nucleus_tao_windows_deco.c"))
-    inputs.file(file("src/main/native/windows/nucleus_tao_gl.c"))
-    inputs.file(file("src/main/native/windows/nucleus_tao_texture.c"))
     outputs.dir(outputDir)
     workingDir(file("src/main/native/windows"))
     commandLine("cmd", "/c", ".\\build.bat")
@@ -99,20 +96,34 @@ val buildNativeLinux by tasks.registering(Exec::class) {
     description = "Compiles the Rust JNI bridge + EGL helper into Linux .so libraries"
     group = "build"
     val outputDir = file("src/main/resources/nucleus/native")
-    val arch = System.getProperty("os.arch").lowercase()
-    val archDir = if (arch.contains("aarch64") || arch.contains("arm64")) "linux-aarch64" else "linux-x64"
-    val checkFile = File(outputDir, "$archDir/libnucleus_tao.so")
-    onlyIf { Os.isFamily(Os.FAMILY_UNIX) && !Os.isFamily(Os.FAMILY_MAC) && !checkFile.exists() }
+    onlyIf { Os.isFamily(Os.FAMILY_UNIX) && !Os.isFamily(Os.FAMILY_MAC) }
     inputs.dir(file("src/main/native/src"))
+    inputs.dir(file("src/main/native/linux"))
     inputs.file(file("src/main/native/Cargo.toml"))
-    inputs.file(file("src/main/native/linux/nucleus_tao_egl.c"))
-    inputs.file(file("src/main/native/linux/nucleus_tao_texture_linux.c"))
-    // Shared by both C translation units above: editing it alone must not leave
-    // the task UP-TO-DATE with a stale .so in the resources.
-    inputs.file(file("src/main/native/linux/nucleus_tao_egl_internal.h"))
     outputs.dir(outputDir)
     workingDir(file("src/main/native/linux"))
     commandLine("bash", "build.sh")
+}
+
+val windowsAngleRuntimeFiles =
+    listOf(
+        file("src/main/resources/nucleus/native/win32-x64/libEGL.dll"),
+        file("src/main/resources/nucleus/native/win32-x64/libGLESv2.dll"),
+        file("src/main/resources/nucleus/native/win32-aarch64/libEGL.dll"),
+        file("src/main/resources/nucleus/native/win32-aarch64/libGLESv2.dll"),
+    )
+val verifyWindowsAngleRuntime by tasks.registering {
+    description = "Verifies that published Tao artifacts contain the pinned ANGLE runtime."
+    group = "verification"
+    dependsOn(buildNativeWindows)
+    inputs.files(windowsAngleRuntimeFiles)
+    doLast {
+        val missing = windowsAngleRuntimeFiles.filterNot { it.isFile && it.length() > 0L }
+        check(missing.isEmpty()) {
+            "Missing pinned ANGLE runtime files: ${missing.joinToString { it.path }}. " +
+                "Run src/main/native/windows/fetch-angle.sh all before publishing."
+        }
+    }
 }
 
 tasks.processResources {
@@ -127,6 +138,10 @@ tasks.configureEach {
         dependsOn(buildNativeWindows)
         dependsOn(buildNativeLinux)
     }
+}
+
+tasks.matching { it.name.startsWith("publish", ignoreCase = true) }.configureEach {
+    dependsOn(verifyWindowsAngleRuntime)
 }
 
 // ── macOS standalone-popup smoke check ──────────────────────────────────────

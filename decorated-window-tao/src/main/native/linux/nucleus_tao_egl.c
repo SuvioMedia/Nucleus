@@ -62,6 +62,7 @@
 #include <jni.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,6 +114,89 @@ typedef unsigned long  EGLNativeWindowType;   /* X11 Window XID on Xlib */
 #define EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT  0x00000002
 #define EGL_PLATFORM_X11_KHR           0x31D5
 #define EGL_PLATFORM_WAYLAND_KHR       0x31D8
+#define EGL_EXTENSIONS                 0x3055
+#define EGL_COLOR_COMPONENT_TYPE_EXT   0x3339
+#define EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT 0x333B
+#define EGL_GL_COLORSPACE_KHR          0x309D
+#define EGL_GL_COLORSPACE_SCRGB_LINEAR_EXT 0x3350
+#define EGL_GL_COLORSPACE_BT2020_PQ_EXT    0x3340
+
+#define NUCLEUS_OUTPUT_SDR   0
+#define NUCLEUS_OUTPUT_SCRGB 1
+#define NUCLEUS_OUTPUT_PQ    2
+
+typedef unsigned int GLenum;
+typedef unsigned int GLuint;
+typedef int GLint;
+typedef int GLsizei;
+typedef char GLchar;
+typedef unsigned char GLboolean;
+
+#define GL_TEXTURE_2D          0x0DE1
+#define GL_TEXTURE_MIN_FILTER  0x2801
+#define GL_TEXTURE_MAG_FILTER  0x2800
+#define GL_TEXTURE_WRAP_S      0x2802
+#define GL_TEXTURE_WRAP_T      0x2803
+#define GL_LINEAR              0x2601
+#define GL_CLAMP_TO_EDGE       0x812F
+#define GL_RGBA16F             0x881A
+#define GL_RGBA                0x1908
+#define GL_HALF_FLOAT          0x140B
+#define GL_FRAMEBUFFER         0x8D40
+#define GL_COLOR_ATTACHMENT0   0x8CE0
+#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
+#define GL_RENDERBUFFER        0x8D41
+#define GL_DEPTH24_STENCIL8    0x88F0
+#define GL_DEPTH_STENCIL_ATTACHMENT 0x821A
+#define GL_VERTEX_SHADER       0x8B31
+#define GL_FRAGMENT_SHADER     0x8B30
+#define GL_COMPILE_STATUS      0x8B81
+#define GL_LINK_STATUS         0x8B82
+#define GL_TEXTURE0            0x84C0
+#define GL_TRIANGLES           0x0004
+#define GL_BLEND               0x0BE2
+#define GL_FRAMEBUFFER_SRGB    0x8DB9
+
+typedef struct PresentationFeedbackData PresentationFeedbackData;
+typedef struct EglAttachment EglAttachment;
+
+typedef struct {
+    void (*GenTextures)(GLsizei, GLuint *);
+    void (*DeleteTextures)(GLsizei, const GLuint *);
+    void (*BindTexture)(GLenum, GLuint);
+    void (*TexParameteri)(GLenum, GLenum, GLint);
+    void (*TexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
+    void (*GenFramebuffers)(GLsizei, GLuint *);
+    void (*DeleteFramebuffers)(GLsizei, const GLuint *);
+    void (*BindFramebuffer)(GLenum, GLuint);
+    void (*FramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint);
+    GLenum (*CheckFramebufferStatus)(GLenum);
+    void (*GenRenderbuffers)(GLsizei, GLuint *);
+    void (*DeleteRenderbuffers)(GLsizei, const GLuint *);
+    void (*BindRenderbuffer)(GLenum, GLuint);
+    void (*RenderbufferStorage)(GLenum, GLenum, GLsizei, GLsizei);
+    void (*FramebufferRenderbuffer)(GLenum, GLenum, GLenum, GLuint);
+    GLuint (*CreateShader)(GLenum);
+    void (*ShaderSource)(GLuint, GLsizei, const GLchar *const *, const GLint *);
+    void (*CompileShader)(GLuint);
+    void (*GetShaderiv)(GLuint, GLenum, GLint *);
+    void (*DeleteShader)(GLuint);
+    GLuint (*CreateProgram)(void);
+    void (*AttachShader)(GLuint, GLuint);
+    void (*LinkProgram)(GLuint);
+    void (*GetProgramiv)(GLuint, GLenum, GLint *);
+    void (*DeleteProgram)(GLuint);
+    void (*UseProgram)(GLuint);
+    GLint (*GetUniformLocation)(GLuint, const GLchar *);
+    void (*Uniform1i)(GLint, GLint);
+    void (*ActiveTexture)(GLenum);
+    void (*GenVertexArrays)(GLsizei, GLuint *);
+    void (*DeleteVertexArrays)(GLsizei, const GLuint *);
+    void (*BindVertexArray)(GLuint);
+    void (*Viewport)(GLint, GLint, GLsizei, GLsizei);
+    void (*Disable)(GLenum);
+    void (*DrawArrays)(GLenum, GLint, GLsizei);
+} PqGlFunctions;
 
 /* ── Xlib types & constants (subset) ────────────────────────────────────── */
 
@@ -259,6 +343,146 @@ struct wl_interface {
     const struct wl_message *events;
 };
 
+/* Staging color-management-v1, version-1 wire declarations. They are kept
+ * local for the same reason as the core Wayland declarations below: the
+ * shipped helper has no build-time dependency on wayland-protocols or
+ * wayland-scanner. Version 1 is intentionally bound even when a compositor
+ * advertises v2, keeping the `wp_image_description_v1.ready(uint)` event ABI
+ * stable while still exposing Windows-scRGB. */
+static const struct wl_interface nucleus_color_manager_interface;
+static const struct wl_interface nucleus_color_surface_interface;
+static const struct wl_interface nucleus_image_description_interface;
+static const struct wl_interface nucleus_parametric_creator_interface;
+static const struct wl_interface nucleus_presentation_interface;
+static const struct wl_interface nucleus_presentation_feedback_interface;
+
+static const struct wl_interface *nucleus_manager_get_output_types[] = { NULL, NULL };
+static const struct wl_interface *nucleus_manager_get_surface_types[] = {
+    &nucleus_color_surface_interface, NULL
+};
+static const struct wl_interface *nucleus_manager_get_feedback_types[] = { NULL, NULL };
+static const struct wl_interface *nucleus_manager_create_icc_types[] = { NULL };
+static const struct wl_interface *nucleus_manager_create_params_types[] = {
+    &nucleus_parametric_creator_interface
+};
+static const struct wl_interface *nucleus_manager_create_scrgb_types[] = {
+    &nucleus_image_description_interface
+};
+static const struct wl_message nucleus_color_manager_requests[] = {
+    { "destroy", "", NULL },
+    { "get_output", "no", nucleus_manager_get_output_types },
+    { "get_surface", "no", nucleus_manager_get_surface_types },
+    { "get_surface_feedback", "no", nucleus_manager_get_feedback_types },
+    { "create_icc_creator", "n", nucleus_manager_create_icc_types },
+    { "create_parametric_creator", "n", nucleus_manager_create_params_types },
+    { "create_windows_scrgb", "n", nucleus_manager_create_scrgb_types },
+};
+static const struct wl_message nucleus_color_manager_events[] = {
+    { "supported_intent", "u", NULL },
+    { "supported_feature", "u", NULL },
+    { "supported_tf_named", "u", NULL },
+    { "supported_primaries_named", "u", NULL },
+    { "done", "", NULL },
+};
+static const struct wl_interface nucleus_color_manager_interface = {
+    "wp_color_manager_v1", 1,
+    7, nucleus_color_manager_requests,
+    5, nucleus_color_manager_events,
+};
+
+static const struct wl_interface *nucleus_surface_set_description_types[] = {
+    &nucleus_image_description_interface, NULL
+};
+static const struct wl_message nucleus_color_surface_requests[] = {
+    { "destroy", "", NULL },
+    { "set_image_description", "ou", nucleus_surface_set_description_types },
+    { "unset_image_description", "", NULL },
+};
+static const struct wl_interface nucleus_color_surface_interface = {
+    "wp_color_management_surface_v1", 1,
+    3, nucleus_color_surface_requests,
+    0, NULL,
+};
+
+static const struct wl_interface *nucleus_description_information_types[] = { NULL };
+static const struct wl_message nucleus_image_description_requests[] = {
+    { "destroy", "", NULL },
+    { "get_information", "n", nucleus_description_information_types },
+};
+static const struct wl_message nucleus_image_description_events[] = {
+    { "failed", "us", NULL },
+    { "ready", "u", NULL },
+};
+static const struct wl_interface nucleus_image_description_interface = {
+    "wp_image_description_v1", 1,
+    2, nucleus_image_description_requests,
+    2, nucleus_image_description_events,
+};
+
+static const struct wl_interface *nucleus_parametric_create_types[] = {
+    &nucleus_image_description_interface
+};
+static const struct wl_message nucleus_parametric_creator_requests[] = {
+    { "create", "n", nucleus_parametric_create_types },
+    { "set_tf_named", "u", NULL },
+    { "set_tf_power", "u", NULL },
+    { "set_primaries_named", "u", NULL },
+    { "set_primaries", "iiiiiiii", NULL },
+    { "set_luminances", "uuu", NULL },
+    { "set_mastering_display_primaries", "iiiiiiii", NULL },
+    { "set_mastering_luminance", "uu", NULL },
+    { "set_max_cll", "u", NULL },
+    { "set_max_fall", "u", NULL },
+};
+static const struct wl_interface nucleus_parametric_creator_interface = {
+    "wp_image_description_creator_params_v1", 1,
+    10, nucleus_parametric_creator_requests,
+    0, NULL,
+};
+
+static const struct wl_interface *nucleus_presentation_feedback_request_types[] = {
+    NULL, &nucleus_presentation_feedback_interface
+};
+static const struct wl_message nucleus_presentation_requests[] = {
+    { "destroy", "", NULL },
+    { "feedback", "on", nucleus_presentation_feedback_request_types },
+};
+static const struct wl_message nucleus_presentation_events[] = {
+    { "clock_id", "u", NULL },
+};
+static const struct wl_interface nucleus_presentation_interface = {
+    "wp_presentation", 1,
+    2, nucleus_presentation_requests,
+    1, nucleus_presentation_events,
+};
+
+static const struct wl_interface *nucleus_feedback_sync_output_types[] = { NULL };
+static const struct wl_message nucleus_presentation_feedback_events[] = {
+    { "sync_output", "o", nucleus_feedback_sync_output_types },
+    { "presented", "uuuuuuu", NULL },
+    { "discarded", "", NULL },
+};
+static const struct wl_interface nucleus_presentation_feedback_interface = {
+    "wp_presentation_feedback", 1,
+    0, NULL,
+    3, nucleus_presentation_feedback_events,
+};
+
+#define NUCLEUS_COLOR_MANAGER_GET_SURFACE       2
+#define NUCLEUS_COLOR_MANAGER_CREATE_PARAMS     5
+#define NUCLEUS_COLOR_MANAGER_CREATE_SCRGB      6
+#define NUCLEUS_COLOR_SURFACE_SET_DESCRIPTION   1
+#define NUCLEUS_COLOR_SURFACE_UNSET_DESCRIPTION 2
+#define NUCLEUS_COLOR_FEATURE_WINDOWS_SCRGB     7
+#define NUCLEUS_COLOR_FEATURE_PARAMETRIC         1
+#define NUCLEUS_COLOR_INTENT_PERCEPTUAL          0
+#define NUCLEUS_COLOR_TRANSFER_ST2084_PQ         11
+#define NUCLEUS_COLOR_PRIMARIES_BT2020           6
+#define NUCLEUS_PARAMETRIC_CREATE                0
+#define NUCLEUS_PARAMETRIC_SET_TF_NAMED          1
+#define NUCLEUS_PARAMETRIC_SET_PRIMARIES_NAMED   3
+#define NUCLEUS_PRESENTATION_FEEDBACK             1
+
 /* Subset of libwayland-client.so.0 we use for the wl_subsurface child path.
  * varargs `wl_proxy_marshal_flags` is the universal request-marshaller — we
  * call it with the same arg layout the inline statics in
@@ -388,6 +612,7 @@ static const struct wl_interface *g_wl_subsurface_interface   = NULL;
 static const struct wl_interface *g_wl_surface_interface      = NULL;
 static const struct wl_interface *g_wl_region_interface       = NULL;
 static const struct wl_interface *g_wl_callback_interface     = NULL;
+static const struct wl_interface *g_wl_output_interface       = NULL;
 
 static int load_libs(void) {
     if (g_libs_loaded) return 1;
@@ -512,6 +737,12 @@ static int load_libs(void) {
             (const struct wl_interface *) dlsym(g_libwlclient, "wl_region_interface");
         g_wl_callback_interface =
             (const struct wl_interface *) dlsym(g_libwlclient, "wl_callback_interface");
+        g_wl_output_interface =
+            (const struct wl_interface *) dlsym(g_libwlclient, "wl_output_interface");
+        nucleus_manager_get_surface_types[1] = g_wl_surface_interface;
+        nucleus_manager_get_feedback_types[1] = g_wl_surface_interface;
+        nucleus_presentation_feedback_request_types[0] = g_wl_surface_interface;
+        nucleus_feedback_sync_output_types[0] = g_wl_output_interface;
     }
 #undef LOAD
 
@@ -548,6 +779,7 @@ static void log_egl_diagnostics_once(EGLDisplay edpy, int is_wayland) {
     if (!p_eglQueryString) return;
     const char *vendor  = p_eglQueryString(edpy, EGL_VENDOR);
     const char *version = p_eglQueryString(edpy, EGL_VERSION);
+    (void) version;
     DBG("EGL %s, vendor: %s, platform: %s\n",
         version ? version : "?",
         vendor  ? vendor  : "?",
@@ -560,6 +792,19 @@ static void log_egl_diagnostics_once(EGLDisplay edpy, int is_wayland) {
             "[nucleus_tao_egl]       supports proper EGLSurface resize; "
             "the legacy egl-wayland cannot resize EGLSurfaces).\n");
     }
+}
+
+static int extension_list_contains(const char *extensions, const char *name) {
+    if (!extensions || !name || !*name) return 0;
+    size_t length = strlen(name);
+    const char *cursor = extensions;
+    while ((cursor = strstr(cursor, name)) != NULL) {
+        int starts = cursor == extensions || cursor[-1] == ' ';
+        int ends = cursor[length] == '\0' || cursor[length] == ' ';
+        if (starts && ends) return 1;
+        cursor += length;
+    }
+    return 0;
 }
 
 /* ── Skia proc-address loader ───────────────────────────────────────────── */
@@ -585,7 +830,7 @@ static void *nucleus_tao_egl_get_proc(void *ctx, const char *name) {
 
 /* ── Per-window state ───────────────────────────────────────────────────── */
 
-typedef struct {
+struct EglAttachment {
     EGLDisplay display;
     EGLConfig  config;
     EGLContext context;
@@ -615,6 +860,26 @@ typedef struct {
     wl_proxy       *wl_child_surface;
     wl_proxy       *wl_subsurface;
     wl_egl_window  *wl_window;
+    wl_proxy       *wl_color_manager;
+    wl_proxy       *wl_color_surface;
+    wl_proxy       *wl_scrgb_description;
+    wl_proxy       *wl_presentation;
+    wl_proxy       *wl_outputs[16];
+    uint32_t        wl_output_count;
+    wl_proxy       *wl_presented_output;
+    PresentationFeedbackData *wl_feedbacks[64];
+    uint32_t        wl_feedback_count;
+    int             output_mode;
+    int             extended_scene;
+    PqGlFunctions   pq_gl;
+    GLuint          pq_scene_texture;
+    GLuint          pq_scene_framebuffer;
+    GLuint          pq_depth_stencil;
+    GLuint          pq_present_program;
+    GLuint          pq_present_vao;
+    GLint           pq_scene_sampler;
+    _Atomic uint64_t output_generation;
+    _Atomic uint64_t presented_frames;
     /* Content-area origin inside the parent surface, logical px. (0,0) for a
      * plain undecorated toplevel; the GTK theme's shadow margins when the
      * hidden-titlebar CSD is active (GTK then draws its native drop shadow in
@@ -626,7 +891,243 @@ typedef struct {
     int             widthPx;
     int             heightPx;
     float      scale;
-} EglAttachment;
+};
+
+struct PresentationFeedbackData {
+    EglAttachment *attachment;
+    wl_proxy *proxy;
+};
+
+static void release_presentation_feedback(PresentationFeedbackData *feedback) {
+    if (!feedback) return;
+    EglAttachment *att = feedback->attachment;
+    if (att) {
+        for (uint32_t index = 0; index < att->wl_feedback_count; index++) {
+            if (att->wl_feedbacks[index] == feedback) {
+                const uint32_t last = --att->wl_feedback_count;
+                att->wl_feedbacks[index] = att->wl_feedbacks[last];
+                att->wl_feedbacks[last] = NULL;
+                break;
+            }
+        }
+    }
+    if (feedback->proxy && p_wl_proxy_destroy) {
+        p_wl_proxy_destroy(feedback->proxy);
+    }
+    free(feedback);
+}
+
+static int load_pq_gl_functions(PqGlFunctions *gl) {
+    if (!gl) return 0;
+#define LOAD_PQ_GL(member, symbol) do {                                      \
+        void *address = nucleus_tao_egl_get_proc(NULL, symbol);               \
+        _Static_assert(sizeof(gl->member) == sizeof(address),                 \
+            "OpenGL function and data pointers must have matching sizes");  \
+        memcpy(&gl->member, &address, sizeof(address));                       \
+        if (!gl->member) return 0;                                            \
+    } while (0)
+    LOAD_PQ_GL(GenTextures, "glGenTextures");
+    LOAD_PQ_GL(DeleteTextures, "glDeleteTextures");
+    LOAD_PQ_GL(BindTexture, "glBindTexture");
+    LOAD_PQ_GL(TexParameteri, "glTexParameteri");
+    LOAD_PQ_GL(TexImage2D, "glTexImage2D");
+    LOAD_PQ_GL(GenFramebuffers, "glGenFramebuffers");
+    LOAD_PQ_GL(DeleteFramebuffers, "glDeleteFramebuffers");
+    LOAD_PQ_GL(BindFramebuffer, "glBindFramebuffer");
+    LOAD_PQ_GL(FramebufferTexture2D, "glFramebufferTexture2D");
+    LOAD_PQ_GL(CheckFramebufferStatus, "glCheckFramebufferStatus");
+    LOAD_PQ_GL(GenRenderbuffers, "glGenRenderbuffers");
+    LOAD_PQ_GL(DeleteRenderbuffers, "glDeleteRenderbuffers");
+    LOAD_PQ_GL(BindRenderbuffer, "glBindRenderbuffer");
+    LOAD_PQ_GL(RenderbufferStorage, "glRenderbufferStorage");
+    LOAD_PQ_GL(FramebufferRenderbuffer, "glFramebufferRenderbuffer");
+    LOAD_PQ_GL(CreateShader, "glCreateShader");
+    LOAD_PQ_GL(ShaderSource, "glShaderSource");
+    LOAD_PQ_GL(CompileShader, "glCompileShader");
+    LOAD_PQ_GL(GetShaderiv, "glGetShaderiv");
+    LOAD_PQ_GL(DeleteShader, "glDeleteShader");
+    LOAD_PQ_GL(CreateProgram, "glCreateProgram");
+    LOAD_PQ_GL(AttachShader, "glAttachShader");
+    LOAD_PQ_GL(LinkProgram, "glLinkProgram");
+    LOAD_PQ_GL(GetProgramiv, "glGetProgramiv");
+    LOAD_PQ_GL(DeleteProgram, "glDeleteProgram");
+    LOAD_PQ_GL(UseProgram, "glUseProgram");
+    LOAD_PQ_GL(GetUniformLocation, "glGetUniformLocation");
+    LOAD_PQ_GL(Uniform1i, "glUniform1i");
+    LOAD_PQ_GL(ActiveTexture, "glActiveTexture");
+    LOAD_PQ_GL(GenVertexArrays, "glGenVertexArrays");
+    LOAD_PQ_GL(DeleteVertexArrays, "glDeleteVertexArrays");
+    LOAD_PQ_GL(BindVertexArray, "glBindVertexArray");
+    LOAD_PQ_GL(Viewport, "glViewport");
+    LOAD_PQ_GL(Disable, "glDisable");
+    LOAD_PQ_GL(DrawArrays, "glDrawArrays");
+#undef LOAD_PQ_GL
+    return 1;
+}
+
+static GLuint compile_pq_shader(
+    PqGlFunctions *gl, GLenum type, const char *source)
+{
+    GLuint shader = gl->CreateShader(type);
+    if (!shader) return 0;
+    gl->ShaderSource(shader, 1, &source, NULL);
+    gl->CompileShader(shader);
+    GLint compiled = 0;
+    gl->GetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (!compiled) {
+        gl->DeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+static void destroy_pq_resources(EglAttachment *att) {
+    if (!att) return;
+    PqGlFunctions *gl = &att->pq_gl;
+    if (att->pq_present_vao && gl->DeleteVertexArrays) {
+        gl->DeleteVertexArrays(1, &att->pq_present_vao);
+    }
+    if (att->pq_present_program && gl->DeleteProgram) {
+        gl->DeleteProgram(att->pq_present_program);
+    }
+    if (att->pq_depth_stencil && gl->DeleteRenderbuffers) {
+        gl->DeleteRenderbuffers(1, &att->pq_depth_stencil);
+    }
+    if (att->pq_scene_framebuffer && gl->DeleteFramebuffers) {
+        gl->DeleteFramebuffers(1, &att->pq_scene_framebuffer);
+    }
+    if (att->pq_scene_texture && gl->DeleteTextures) {
+        gl->DeleteTextures(1, &att->pq_scene_texture);
+    }
+    att->pq_present_vao = 0;
+    att->pq_present_program = 0;
+    att->pq_depth_stencil = 0;
+    att->pq_scene_framebuffer = 0;
+    att->pq_scene_texture = 0;
+    att->pq_scene_sampler = -1;
+}
+
+static int resize_pq_scene_target(EglAttachment *att, int width, int height) {
+    if (!att || att->output_mode != NUCLEUS_OUTPUT_PQ ||
+        !att->pq_scene_texture || !att->pq_scene_framebuffer ||
+        !att->pq_depth_stencil) return 0;
+    PqGlFunctions *gl = &att->pq_gl;
+    width = width > 0 ? width : 1;
+    height = height > 0 ? height : 1;
+    gl->BindTexture(GL_TEXTURE_2D, att->pq_scene_texture);
+    gl->TexImage2D(
+        GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0,
+        GL_RGBA, GL_HALF_FLOAT, NULL);
+    gl->BindRenderbuffer(GL_RENDERBUFFER, att->pq_depth_stencil);
+    gl->RenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+    gl->BindFramebuffer(GL_FRAMEBUFFER, att->pq_scene_framebuffer);
+    gl->FramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+        att->pq_scene_texture, 0);
+    gl->FramebufferRenderbuffer(
+        GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER,
+        att->pq_depth_stencil);
+    return gl->CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+}
+
+static int initialize_pq_resources(EglAttachment *att) {
+    static const char vertex_source[] =
+        "#version 330 core\n"
+        "out vec2 textureCoordinate;\n"
+        "void main() {\n"
+        "  vec2 position = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n"
+        "  textureCoordinate = position;\n"
+        "  gl_Position = vec4(position * 2.0 - 1.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char fragment_source[] =
+        "#version 330 core\n"
+        "in vec2 textureCoordinate;\n"
+        "uniform sampler2D sceneTexture;\n"
+        "out vec4 outputColor;\n"
+        "vec3 encodePq(vec3 value) {\n"
+        "  const float m1 = 0.1593017578125;\n"
+        "  const float m2 = 78.84375;\n"
+        "  const float c1 = 0.8359375;\n"
+        "  const float c2 = 18.8515625;\n"
+        "  const float c3 = 18.6875;\n"
+        "  vec3 powered = pow(clamp(value, 0.0, 1.0), vec3(m1));\n"
+        "  return pow((vec3(c1) + c2 * powered) / (vec3(1.0) + c3 * powered), vec3(m2));\n"
+        "}\n"
+        "void main() {\n"
+        "  vec4 scene = texture(sceneTexture, textureCoordinate);\n"
+        "  float alpha = clamp(scene.a, 0.0, 1.0);\n"
+        "  vec3 straight = alpha > 0.000001 ? scene.rgb / alpha : vec3(0.0);\n"
+        "  mat3 srgbToBt2020 = mat3(\n"
+        "    0.627404, 0.069097, 0.016391,\n"
+        "    0.329283, 0.919540, 0.088013,\n"
+        "    0.043313, 0.011362, 0.895595);\n"
+        "  vec3 normalizedNits = max(srgbToBt2020 * straight, vec3(0.0)) * (203.0 / 10000.0);\n"
+        "  outputColor = vec4(encodePq(normalizedNits) * alpha, alpha);\n"
+        "}\n";
+    if (!att || !load_pq_gl_functions(&att->pq_gl)) return 0;
+    PqGlFunctions *gl = &att->pq_gl;
+    GLuint vertex = compile_pq_shader(gl, GL_VERTEX_SHADER, vertex_source);
+    GLuint fragment = compile_pq_shader(gl, GL_FRAGMENT_SHADER, fragment_source);
+    if (!vertex || !fragment) {
+        if (vertex) gl->DeleteShader(vertex);
+        if (fragment) gl->DeleteShader(fragment);
+        return 0;
+    }
+    att->pq_present_program = gl->CreateProgram();
+    if (att->pq_present_program) {
+        gl->AttachShader(att->pq_present_program, vertex);
+        gl->AttachShader(att->pq_present_program, fragment);
+        gl->LinkProgram(att->pq_present_program);
+    }
+    gl->DeleteShader(vertex);
+    gl->DeleteShader(fragment);
+    GLint linked = 0;
+    if (att->pq_present_program) {
+        gl->GetProgramiv(att->pq_present_program, GL_LINK_STATUS, &linked);
+    }
+    if (!linked) {
+        destroy_pq_resources(att);
+        return 0;
+    }
+    att->pq_scene_sampler =
+        gl->GetUniformLocation(att->pq_present_program, "sceneTexture");
+    gl->GenTextures(1, &att->pq_scene_texture);
+    gl->BindTexture(GL_TEXTURE_2D, att->pq_scene_texture);
+    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl->TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl->GenFramebuffers(1, &att->pq_scene_framebuffer);
+    gl->GenRenderbuffers(1, &att->pq_depth_stencil);
+    gl->GenVertexArrays(1, &att->pq_present_vao);
+    if (!att->pq_scene_texture || !att->pq_scene_framebuffer ||
+        !att->pq_depth_stencil || !att->pq_present_vao ||
+        !resize_pq_scene_target(att, att->widthPx, att->heightPx)) {
+        destroy_pq_resources(att);
+        return 0;
+    }
+    return 1;
+}
+
+static void present_pq_scene(EglAttachment *att) {
+    if (!att || att->output_mode != NUCLEUS_OUTPUT_PQ ||
+        !att->pq_present_program || !att->pq_scene_texture) return;
+    PqGlFunctions *gl = &att->pq_gl;
+    gl->BindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl->Viewport(0, 0, att->widthPx, att->heightPx);
+    gl->Disable(GL_BLEND);
+    gl->Disable(GL_FRAMEBUFFER_SRGB);
+    gl->UseProgram(att->pq_present_program);
+    gl->ActiveTexture(GL_TEXTURE0);
+    gl->BindTexture(GL_TEXTURE_2D, att->pq_scene_texture);
+    if (att->pq_scene_sampler >= 0) gl->Uniform1i(att->pq_scene_sampler, 0);
+    gl->BindVertexArray(att->pq_present_vao);
+    gl->DrawArrays(GL_TRIANGLES, 0, 3);
+    gl->BindVertexArray(0);
+    gl->BindTexture(GL_TEXTURE_2D, 0);
+    gl->UseProgram(0);
+    gl->BindFramebuffer(GL_FRAMEBUFFER, att->pq_scene_framebuffer);
+}
 
 /* ── Internal surface shared inside libnucleus_tao_egl.so ───────────────── */
 /* Implemented here because this TU owns the dlopen'd EGL entry points and the
@@ -944,6 +1445,8 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachX11(
     att->widthPx        = widthPx  > 0 ? widthPx  : wa.width;
     att->heightPx       = heightPx > 0 ? heightPx : wa.height;
     att->scale          = 1.0f;
+    atomic_store(&att->output_generation, 1);
+    atomic_store(&att->presented_frames, 0);
     DBG("attached: edpy=%p ctx=%p surf=%p (child=0x%lx)\n",
         edpy, (void*)ctx, (void*)surf, child_xid);
     return (jlong) (uintptr_t) att;
@@ -958,9 +1461,323 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachX11(
  */
 typedef struct {
     wl_proxy *registry;
+    wl_event_queue *queue;
     wl_proxy *compositor;
     wl_proxy *subcompositor;
+    wl_proxy *color_manager;
+    wl_proxy *color_surface;
+    wl_proxy *scrgb_description;
+    wl_proxy *presentation;
+    wl_proxy *outputs[16];
+    uint32_t output_count;
+    int supports_perceptual;
+    int supports_windows_scrgb;
+    int supports_parametric;
+    int supports_pq;
+    int supports_bt2020;
+    int scrgb_ready;
+    int scrgb_failed;
 } WlBindState;
+
+static void wl_output_geometry_ignored(
+    void *data, wl_proxy *output, int32_t x, int32_t y,
+    int32_t physical_width, int32_t physical_height, int32_t subpixel,
+    const char *make, const char *model, int32_t transform)
+{
+    (void) data; (void) output; (void) x; (void) y;
+    (void) physical_width; (void) physical_height; (void) subpixel;
+    (void) make; (void) model; (void) transform;
+}
+
+static void wl_output_mode_ignored(
+    void *data, wl_proxy *output, uint32_t flags,
+    int32_t width, int32_t height, int32_t refresh)
+{
+    (void) data; (void) output; (void) flags;
+    (void) width; (void) height; (void) refresh;
+}
+
+static void (*const nucleus_wl_output_listener[])(void) = {
+    (void (*)(void)) wl_output_geometry_ignored,
+    (void (*)(void)) wl_output_mode_ignored,
+};
+
+static void presentation_clock_id_ignored(
+    void *data, wl_proxy *presentation, uint32_t clock_id)
+{
+    (void) data; (void) presentation; (void) clock_id;
+}
+
+static void (*const nucleus_presentation_listener[])(void) = {
+    (void (*)(void)) presentation_clock_id_ignored,
+};
+
+static void presentation_feedback_sync_output(
+    void *data, wl_proxy *feedback, wl_proxy *output)
+{
+    (void) feedback;
+    PresentationFeedbackData *feedback_data = (PresentationFeedbackData *) data;
+    EglAttachment *att = feedback_data ? feedback_data->attachment : NULL;
+    if (!att || att->wl_presented_output == output) return;
+    att->wl_presented_output = output;
+    atomic_fetch_add(&att->output_generation, 1);
+    atomic_store(&att->presented_frames, 0);
+}
+
+static void presentation_feedback_presented(
+    void *data, wl_proxy *feedback,
+    uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec,
+    uint32_t refresh, uint32_t seq_hi, uint32_t seq_lo, uint32_t flags)
+{
+    (void) feedback; (void) tv_sec_hi; (void) tv_sec_lo; (void) tv_nsec;
+    (void) refresh; (void) seq_hi; (void) seq_lo; (void) flags;
+    PresentationFeedbackData *feedback_data = (PresentationFeedbackData *) data;
+    EglAttachment *att = feedback_data ? feedback_data->attachment : NULL;
+    if (att) atomic_fetch_add(&att->presented_frames, 1);
+    release_presentation_feedback(feedback_data);
+}
+
+static void presentation_feedback_discarded(void *data, wl_proxy *feedback) {
+    (void) feedback;
+    release_presentation_feedback((PresentationFeedbackData *) data);
+}
+
+static void (*const nucleus_presentation_feedback_listener[])(void) = {
+    (void (*)(void)) presentation_feedback_sync_output,
+    (void (*)(void)) presentation_feedback_presented,
+    (void (*)(void)) presentation_feedback_discarded,
+};
+
+static void color_manager_supported_intent(
+    void *data, wl_proxy *manager, uint32_t intent)
+{
+    (void) manager;
+    WlBindState *st = (WlBindState *) data;
+    if (intent == NUCLEUS_COLOR_INTENT_PERCEPTUAL) st->supports_perceptual = 1;
+}
+
+static void color_manager_supported_feature(
+    void *data, wl_proxy *manager, uint32_t feature)
+{
+    (void) manager;
+    WlBindState *st = (WlBindState *) data;
+    if (feature == NUCLEUS_COLOR_FEATURE_WINDOWS_SCRGB) st->supports_windows_scrgb = 1;
+    if (feature == NUCLEUS_COLOR_FEATURE_PARAMETRIC) st->supports_parametric = 1;
+}
+
+static void color_manager_supported_tf(
+    void *data, wl_proxy *manager, uint32_t value)
+{
+    (void) manager;
+    WlBindState *st = (WlBindState *) data;
+    if (value == NUCLEUS_COLOR_TRANSFER_ST2084_PQ) st->supports_pq = 1;
+}
+
+static void color_manager_supported_primaries(
+    void *data, wl_proxy *manager, uint32_t value)
+{
+    (void) manager;
+    WlBindState *st = (WlBindState *) data;
+    if (value == NUCLEUS_COLOR_PRIMARIES_BT2020) st->supports_bt2020 = 1;
+}
+
+static void color_manager_done(void *data, wl_proxy *manager) {
+    (void) data; (void) manager;
+}
+
+static void (*const nucleus_color_manager_listener[])(void) = {
+    (void (*)(void)) color_manager_supported_intent,
+    (void (*)(void)) color_manager_supported_feature,
+    (void (*)(void)) color_manager_supported_tf,
+    (void (*)(void)) color_manager_supported_primaries,
+    (void (*)(void)) color_manager_done,
+};
+
+static void scrgb_description_failed(
+    void *data, wl_proxy *description, uint32_t cause, const char *message)
+{
+    (void) description; (void) cause; (void) message;
+    ((WlBindState *) data)->scrgb_failed = 1;
+}
+
+static void scrgb_description_ready(
+    void *data, wl_proxy *description, uint32_t identity)
+{
+    (void) description; (void) identity;
+    ((WlBindState *) data)->scrgb_ready = 1;
+}
+
+static void (*const nucleus_image_description_listener[])(void) = {
+    (void (*)(void)) scrgb_description_failed,
+    (void (*)(void)) scrgb_description_ready,
+};
+
+static void destroy_color_protocol_object(wl_proxy **object) {
+    if (!object || !*object) return;
+    p_wl_proxy_marshal_flags(
+        *object, 0, NULL, p_wl_proxy_get_version(*object), WL_MARSHAL_FLAG_DESTROY);
+    *object = NULL;
+}
+
+static void destroy_bound_outputs(WlBindState *st) {
+    if (!st) return;
+    for (uint32_t index = 0; index < st->output_count; index++) {
+        if (st->outputs[index] && p_wl_proxy_destroy) {
+            p_wl_proxy_destroy(st->outputs[index]);
+            st->outputs[index] = NULL;
+        }
+    }
+    st->output_count = 0;
+}
+
+static void destroy_bind_extension_globals(WlBindState *st) {
+    if (!st) return;
+    destroy_color_protocol_object(&st->presentation);
+    destroy_bound_outputs(st);
+    destroy_color_protocol_object(&st->color_manager);
+}
+
+static void discard_scrgb_surface_state(WlBindState *st) {
+    if (!st) return;
+    if (st->color_surface) {
+        p_wl_proxy_marshal_flags(
+            st->color_surface,
+            NUCLEUS_COLOR_SURFACE_UNSET_DESCRIPTION,
+            NULL,
+            p_wl_proxy_get_version(st->color_surface),
+            0);
+    }
+    destroy_color_protocol_object(&st->scrgb_description);
+    destroy_color_protocol_object(&st->color_surface);
+    st->scrgb_ready = 0;
+    st->scrgb_failed = 0;
+}
+
+static int configure_windows_scrgb(
+    WlBindState *st, wl_display *display, wl_proxy *surface)
+{
+    if (!st || !display || !surface || !st->color_manager ||
+        !st->supports_perceptual || !st->supports_windows_scrgb) return 0;
+    st->color_surface = p_wl_proxy_marshal_flags(
+        st->color_manager,
+        NUCLEUS_COLOR_MANAGER_GET_SURFACE,
+        &nucleus_color_surface_interface,
+        p_wl_proxy_get_version(st->color_manager),
+        0,
+        NULL,
+        surface);
+    st->scrgb_description = p_wl_proxy_marshal_flags(
+        st->color_manager,
+        NUCLEUS_COLOR_MANAGER_CREATE_SCRGB,
+        &nucleus_image_description_interface,
+        p_wl_proxy_get_version(st->color_manager),
+        0,
+        NULL);
+    if (!st->color_surface || !st->scrgb_description) {
+        discard_scrgb_surface_state(st);
+        return 0;
+    }
+    if (st->queue) {
+        p_wl_proxy_set_queue(st->color_surface, st->queue);
+        p_wl_proxy_set_queue(st->scrgb_description, st->queue);
+    }
+    if (p_wl_proxy_add_listener(
+            st->scrgb_description,
+            (void (**)(void)) nucleus_image_description_listener,
+            st) != 0 ||
+        p_wl_display_roundtrip_queue(display, st->queue) < 0 ||
+        !st->scrgb_ready || st->scrgb_failed) {
+        discard_scrgb_surface_state(st);
+        return 0;
+    }
+    p_wl_proxy_marshal_flags(
+        st->color_surface,
+        NUCLEUS_COLOR_SURFACE_SET_DESCRIPTION,
+        NULL,
+        p_wl_proxy_get_version(st->color_surface),
+        0,
+        st->scrgb_description,
+        NUCLEUS_COLOR_INTENT_PERCEPTUAL);
+    return 1;
+}
+
+static int configure_bt2020_pq(
+    WlBindState *st, wl_display *display, wl_proxy *surface)
+{
+    if (!st || !display || !surface || !st->color_manager ||
+        !st->supports_perceptual || !st->supports_parametric ||
+        !st->supports_pq || !st->supports_bt2020) return 0;
+    st->color_surface = p_wl_proxy_marshal_flags(
+        st->color_manager,
+        NUCLEUS_COLOR_MANAGER_GET_SURFACE,
+        &nucleus_color_surface_interface,
+        p_wl_proxy_get_version(st->color_manager),
+        0,
+        NULL,
+        surface);
+    wl_proxy *creator = p_wl_proxy_marshal_flags(
+        st->color_manager,
+        NUCLEUS_COLOR_MANAGER_CREATE_PARAMS,
+        &nucleus_parametric_creator_interface,
+        p_wl_proxy_get_version(st->color_manager),
+        0,
+        NULL);
+    if (!st->color_surface || !creator) {
+        if (creator && p_wl_proxy_destroy) p_wl_proxy_destroy(creator);
+        discard_scrgb_surface_state(st);
+        return 0;
+    }
+    if (st->queue) {
+        p_wl_proxy_set_queue(st->color_surface, st->queue);
+        p_wl_proxy_set_queue(creator, st->queue);
+    }
+    p_wl_proxy_marshal_flags(
+        creator,
+        NUCLEUS_PARAMETRIC_SET_TF_NAMED,
+        NULL,
+        p_wl_proxy_get_version(creator),
+        0,
+        NUCLEUS_COLOR_TRANSFER_ST2084_PQ);
+    p_wl_proxy_marshal_flags(
+        creator,
+        NUCLEUS_PARAMETRIC_SET_PRIMARIES_NAMED,
+        NULL,
+        p_wl_proxy_get_version(creator),
+        0,
+        NUCLEUS_COLOR_PRIMARIES_BT2020);
+    st->scrgb_description = p_wl_proxy_marshal_flags(
+        creator,
+        NUCLEUS_PARAMETRIC_CREATE,
+        &nucleus_image_description_interface,
+        p_wl_proxy_get_version(creator),
+        WL_MARSHAL_FLAG_DESTROY,
+        NULL);
+    if (!st->scrgb_description) {
+        discard_scrgb_surface_state(st);
+        return 0;
+    }
+    if (st->queue) p_wl_proxy_set_queue(st->scrgb_description, st->queue);
+    st->scrgb_ready = 0;
+    st->scrgb_failed = 0;
+    if (p_wl_proxy_add_listener(
+            st->scrgb_description,
+            (void (**)(void)) nucleus_image_description_listener,
+            st) != 0 ||
+        p_wl_display_roundtrip_queue(display, st->queue) < 0 ||
+        !st->scrgb_ready || st->scrgb_failed) {
+        discard_scrgb_surface_state(st);
+        return 0;
+    }
+    p_wl_proxy_marshal_flags(
+        st->color_surface,
+        NUCLEUS_COLOR_SURFACE_SET_DESCRIPTION,
+        NULL,
+        p_wl_proxy_get_version(st->color_surface),
+        0,
+        st->scrgb_description,
+        NUCLEUS_COLOR_INTENT_PERCEPTUAL);
+    return 1;
+}
 
 static void wl_registry_global(
     void *data, wl_proxy *registry, uint32_t name,
@@ -981,6 +1798,44 @@ static void wl_registry_global(
         st->subcompositor = p_wl_proxy_marshal_flags(
             registry, WL_REGISTRY_BIND, g_wl_subcompositor_interface, v, 0,
             name, "wl_subcompositor", v, NULL);
+    } else if (!st->color_manager && strcmp(interface, "wp_color_manager_v1") == 0) {
+        uint32_t v = version < 1 ? version : 1;
+        st->color_manager = p_wl_proxy_marshal_flags(
+            registry, WL_REGISTRY_BIND, &nucleus_color_manager_interface, v, 0,
+            name, "wp_color_manager_v1", v, NULL);
+        if (st->color_manager) {
+            if (st->queue) p_wl_proxy_set_queue(st->color_manager, st->queue);
+            p_wl_proxy_add_listener(
+                st->color_manager,
+                (void (**)(void)) nucleus_color_manager_listener,
+                st);
+        }
+    } else if (!st->presentation && strcmp(interface, "wp_presentation") == 0) {
+        uint32_t v = version < 1 ? version : 1;
+        st->presentation = p_wl_proxy_marshal_flags(
+            registry, WL_REGISTRY_BIND, &nucleus_presentation_interface, v, 0,
+            name, "wp_presentation", v, NULL);
+        if (st->presentation) {
+            if (st->queue) p_wl_proxy_set_queue(st->presentation, st->queue);
+            p_wl_proxy_add_listener(
+                st->presentation,
+                (void (**)(void)) nucleus_presentation_listener,
+                st);
+        }
+    } else if (g_wl_output_interface &&
+               strcmp(interface, "wl_output") == 0 &&
+               st->output_count < 16) {
+        wl_proxy *output = p_wl_proxy_marshal_flags(
+            registry, WL_REGISTRY_BIND, g_wl_output_interface, 1, 0,
+            name, "wl_output", 1, NULL);
+        if (output) {
+            if (st->queue) p_wl_proxy_set_queue(output, st->queue);
+            p_wl_proxy_add_listener(
+                output,
+                (void (**)(void)) nucleus_wl_output_listener,
+                st);
+            st->outputs[st->output_count++] = output;
+        }
     }
 }
 
@@ -1040,7 +1895,8 @@ JNIEXPORT jlong JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
     JNIEnv *env, jclass clazz,
     jlong wlDisplayPtr, jlong wlSurfacePtr,
-    jint widthPx, jint heightPx, jint bufferScale, jint swapInterval)
+    jint widthPx, jint heightPx, jint bufferScale, jint swapInterval,
+    jboolean extendedDynamicRange)
 {
     (void) env; (void) clazz;
     if (!wlDisplayPtr || !wlSurfacePtr) return 0;
@@ -1093,7 +1949,10 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
     }
     p_wl_proxy_set_queue(registry, queue);
 
-    WlBindState bind_state = { registry, NULL, NULL };
+    WlBindState bind_state;
+    memset(&bind_state, 0, sizeof(bind_state));
+    bind_state.registry = registry;
+    bind_state.queue = queue;
     p_wl_proxy_add_listener(
         registry, (void (**)(void)) wl_registry_listener, &bind_state);
 
@@ -1109,6 +1968,16 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
      * the set_queue here explicitly to be defensive. */
     if (p_wl_display_roundtrip_queue(wdpy, queue) < 0) {
         DBG("wl_display_roundtrip_queue failed\n");
+        destroy_bind_extension_globals(&bind_state);
+        if (bind_state.compositor) p_wl_proxy_destroy(bind_state.compositor);
+        if (bind_state.subcompositor) p_wl_proxy_destroy(bind_state.subcompositor);
+        p_wl_proxy_destroy(registry);
+        p_wl_event_queue_destroy(queue);
+        return 0;
+    }
+    if (bind_state.color_manager &&
+        p_wl_display_roundtrip_queue(wdpy, queue) < 0) {
+        destroy_bind_extension_globals(&bind_state);
         if (bind_state.compositor) p_wl_proxy_destroy(bind_state.compositor);
         if (bind_state.subcompositor) p_wl_proxy_destroy(bind_state.subcompositor);
         p_wl_proxy_destroy(registry);
@@ -1122,6 +1991,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
                 bind_state.compositor ? "" : "wl_compositor",
                 (!bind_state.compositor && !bind_state.subcompositor) ? " and " : "",
                 bind_state.subcompositor ? "" : "wl_subcompositor");
+        destroy_bind_extension_globals(&bind_state);
         if (bind_state.compositor) p_wl_proxy_destroy(bind_state.compositor);
         if (bind_state.subcompositor) p_wl_proxy_destroy(bind_state.subcompositor);
         p_wl_proxy_destroy(registry);
@@ -1139,6 +2009,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
         0, NULL);
     if (!child_surface) {
         DBG("wl_compositor.create_surface returned NULL\n");
+        destroy_bind_extension_globals(&bind_state);
         p_wl_proxy_destroy(bind_state.subcompositor);
         p_wl_proxy_destroy(bind_state.compositor);
         p_wl_proxy_destroy(registry);
@@ -1160,6 +2031,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
         DBG("wl_subcompositor.get_subsurface returned NULL\n");
         p_wl_proxy_marshal_flags(child_surface, WL_SURFACE_DESTROY, NULL,
             p_wl_proxy_get_version(child_surface), WL_MARSHAL_FLAG_DESTROY);
+        destroy_bind_extension_globals(&bind_state);
         p_wl_proxy_destroy(bind_state.subcompositor);
         p_wl_proxy_destroy(bind_state.compositor);
         p_wl_proxy_destroy(registry);
@@ -1228,6 +2100,11 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
     }
 
     /* ── 4) EGL setup against our child wl_surface ── */
+    /* The image description must be ready before it can be associated with a
+     * surface. This private-queue roundtrip happens before EGL attaches the
+     * first buffer, so no incorrectly-tagged frame can reach the compositor. */
+    const int requested_extended = extendedDynamicRange == JNI_TRUE;
+
     EGLDisplay edpy = EGL_NO_DISPLAY;
     if (p_eglGetPlatformDisplay) {
         edpy = p_eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR, wdpy, NULL);
@@ -1252,7 +2129,9 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
         goto fail_after_subsurface;
     }
 
-    const EGLint cfg_attrs[] = {
+    const char *egl_extensions = p_eglQueryString
+        ? p_eglQueryString(edpy, EGL_EXTENSIONS) : NULL;
+    const EGLint cfg_attrs_sdr[] = {
         EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
         EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
         EGL_RED_SIZE,        8,
@@ -1264,12 +2143,31 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
         EGL_SAMPLES,         0,
         EGL_NONE
     };
-    EGLConfig cfg = NULL;
-    EGLint ncfg = 0;
-    if (!p_eglChooseConfig(edpy, cfg_attrs, &cfg, 1, &ncfg) || ncfg <= 0 || !cfg) {
-        DBG("eglChooseConfig (Wayland) returned no configs\n");
-        goto fail_after_subsurface;
-    }
+    const EGLint cfg_attrs_scrgb[] = {
+        EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_RED_SIZE,        16,
+        EGL_GREEN_SIZE,      16,
+        EGL_BLUE_SIZE,       16,
+        EGL_ALPHA_SIZE,      16,
+        EGL_DEPTH_SIZE,      0,
+        EGL_STENCIL_SIZE,    0,
+        EGL_SAMPLES,         0,
+        EGL_COLOR_COMPONENT_TYPE_EXT, EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT,
+        EGL_NONE
+    };
+    const EGLint cfg_attrs_pq[] = {
+        EGL_SURFACE_TYPE,    EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_RED_SIZE,        10,
+        EGL_GREEN_SIZE,      10,
+        EGL_BLUE_SIZE,       10,
+        EGL_ALPHA_SIZE,      2,
+        EGL_DEPTH_SIZE,      0,
+        EGL_STENCIL_SIZE,    0,
+        EGL_SAMPLES,         0,
+        EGL_NONE
+    };
 
     const EGLint ctx_attrs[] = {
         EGL_CONTEXT_MAJOR_VERSION, 3,
@@ -1278,36 +2176,105 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
             EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
         EGL_NONE
     };
-    EGLContext ctx = p_eglCreateContext(edpy, cfg, EGL_NO_CONTEXT, ctx_attrs);
-    if (ctx == EGL_NO_CONTEXT) {
-        DBG("eglCreateContext (Wayland) failed: 0x%x\n", p_eglGetError ? p_eglGetError() : 0);
-        goto fail_after_subsurface;
-    }
+    const EGLint scrgb_surface_attrs[] = {
+        EGL_GL_COLORSPACE_KHR, EGL_GL_COLORSPACE_SCRGB_LINEAR_EXT,
+        EGL_NONE
+    };
+    const EGLint pq_surface_attrs[] = {
+        EGL_GL_COLORSPACE_KHR, EGL_GL_COLORSPACE_BT2020_PQ_EXT,
+        EGL_NONE
+    };
+    const int can_scrgb =
+        requested_extended &&
+        extension_list_contains(egl_extensions, "EGL_EXT_pixel_format_float") &&
+        extension_list_contains(egl_extensions, "EGL_EXT_gl_colorspace_scrgb_linear");
+    const int can_pq =
+        requested_extended &&
+        extension_list_contains(egl_extensions, "EGL_EXT_gl_colorspace_bt2020_pq");
+    int candidates[3];
+    int candidate_count = 0;
+    if (can_scrgb) candidates[candidate_count++] = NUCLEUS_OUTPUT_SCRGB;
+    if (can_pq) candidates[candidate_count++] = NUCLEUS_OUTPUT_PQ;
+    candidates[candidate_count++] = NUCLEUS_OUTPUT_SDR;
 
-    /* Wrap our owned child wl_surface — NOT GTK's — into a wl_egl_window. */
     wl_egl_window *wlwin = p_wl_egl_window_create((wl_surface *) child_surface, phys_w, phys_h);
     if (!wlwin) {
         DBG("wl_egl_window_create returned NULL\n");
-        p_eglDestroyContext(edpy, ctx);
         goto fail_after_subsurface;
     }
-    EGLSurface surf = p_eglCreateWindowSurface(edpy, cfg,
-                                               (EGLNativeWindowType) wlwin, NULL);
-    if (surf == EGL_NO_SURFACE) {
-        DBG("eglCreateWindowSurface (Wayland) failed: 0x%x\n",
-            p_eglGetError ? p_eglGetError() : 0);
+    EglAttachment *att = (EglAttachment *) calloc(1, sizeof(EglAttachment));
+    if (!att) {
         if (p_wl_egl_window_destroy) p_wl_egl_window_destroy(wlwin);
-        p_eglDestroyContext(edpy, ctx);
         goto fail_after_subsurface;
     }
-    if (!p_eglMakeCurrent(edpy, surf, surf, ctx)) {
-        DBG("eglMakeCurrent (Wayland) failed: 0x%x\n",
+    att->display = edpy;
+    att->widthPx = phys_w;
+    att->heightPx = phys_h;
+    att->pq_scene_sampler = -1;
+
+    EGLConfig cfg = NULL;
+    EGLContext ctx = EGL_NO_CONTEXT;
+    EGLSurface surf = EGL_NO_SURFACE;
+    int output_mode = NUCLEUS_OUTPUT_SDR;
+    for (int candidate_index = 0; candidate_index < candidate_count; candidate_index++) {
+        const int candidate = candidates[candidate_index];
+        discard_scrgb_surface_state(&bind_state);
+        if (candidate == NUCLEUS_OUTPUT_SCRGB &&
+            !configure_windows_scrgb(&bind_state, wdpy, child_surface)) continue;
+        if (candidate == NUCLEUS_OUTPUT_PQ &&
+            !configure_bt2020_pq(&bind_state, wdpy, child_surface)) continue;
+        const EGLint *cfg_attrs =
+            candidate == NUCLEUS_OUTPUT_SCRGB ? cfg_attrs_scrgb :
+            candidate == NUCLEUS_OUTPUT_PQ ? cfg_attrs_pq : cfg_attrs_sdr;
+        EGLint ncfg = 0;
+        cfg = NULL;
+        if (!p_eglChooseConfig(edpy, cfg_attrs, &cfg, 1, &ncfg) || ncfg <= 0 || !cfg) {
+            continue;
+        }
+        ctx = p_eglCreateContext(edpy, cfg, EGL_NO_CONTEXT, ctx_attrs);
+        if (ctx == EGL_NO_CONTEXT) continue;
+        const EGLint *surface_attrs =
+            candidate == NUCLEUS_OUTPUT_SCRGB ? scrgb_surface_attrs :
+            candidate == NUCLEUS_OUTPUT_PQ ? pq_surface_attrs : NULL;
+        surf = p_eglCreateWindowSurface(
+            edpy, cfg, (EGLNativeWindowType) wlwin, surface_attrs);
+        if (surf == EGL_NO_SURFACE || !p_eglMakeCurrent(edpy, surf, surf, ctx)) {
+            if (surf != EGL_NO_SURFACE) p_eglDestroySurface(edpy, surf);
+            p_eglDestroyContext(edpy, ctx);
+            surf = EGL_NO_SURFACE;
+            ctx = EGL_NO_CONTEXT;
+            continue;
+        }
+        att->config = cfg;
+        att->context = ctx;
+        att->surface = surf;
+        att->output_mode = candidate;
+        att->extended_scene = candidate != NUCLEUS_OUTPUT_SDR;
+        if (candidate == NUCLEUS_OUTPUT_PQ && !initialize_pq_resources(att)) {
+            p_eglMakeCurrent(edpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            p_eglDestroySurface(edpy, surf);
+            p_eglDestroyContext(edpy, ctx);
+            surf = EGL_NO_SURFACE;
+            ctx = EGL_NO_CONTEXT;
+            att->config = NULL;
+            att->context = EGL_NO_CONTEXT;
+            att->surface = EGL_NO_SURFACE;
+            att->output_mode = NUCLEUS_OUTPUT_SDR;
+            att->extended_scene = 0;
+            continue;
+        }
+        output_mode = candidate;
+        break;
+    }
+    if (surf == EGL_NO_SURFACE || ctx == EGL_NO_CONTEXT) {
+        DBG("No usable Wayland EGL SDR/scRGB/PQ surface: 0x%x\n",
             p_eglGetError ? p_eglGetError() : 0);
-        p_eglDestroySurface(edpy, surf);
+        discard_scrgb_surface_state(&bind_state);
+        free(att);
         if (p_wl_egl_window_destroy) p_wl_egl_window_destroy(wlwin);
-        p_eglDestroyContext(edpy, ctx);
         goto fail_after_subsurface;
     }
+
     /* eglSwapInterval(1) — relies on the JVM-side architecture binding the
      * EGL context to a *dedicated* swap thread, not the GTK main thread. On
      * Wayland the swap blocks waiting for the compositor's frame callback,
@@ -1328,14 +2295,6 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
      * pacing for those surfaces is event-driven (pointer motion) anyway. */
     if (p_eglSwapInterval) p_eglSwapInterval(edpy, swapInterval ? 1 : 0);
 
-    EglAttachment *att = (EglAttachment *) calloc(1, sizeof(EglAttachment));
-    if (!att) {
-        p_eglMakeCurrent(edpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        p_eglDestroySurface(edpy, surf);
-        if (p_wl_egl_window_destroy) p_wl_egl_window_destroy(wlwin);
-        p_eglDestroyContext(edpy, ctx);
-        goto fail_after_subsurface;
-    }
     att->display          = edpy;
     att->config           = cfg;
     att->context          = ctx;
@@ -1349,9 +2308,30 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
     att->wl_child_surface = child_surface;
     att->wl_subsurface    = subsurface;
     att->wl_window        = wlwin;
+    att->wl_color_manager = bind_state.color_manager;
+    att->wl_color_surface = bind_state.color_surface;
+    att->wl_scrgb_description = bind_state.scrgb_description;
+    att->wl_presentation = bind_state.presentation;
+    att->wl_output_count = bind_state.output_count;
+    for (uint32_t index = 0; index < bind_state.output_count; index++) {
+        att->wl_outputs[index] = bind_state.outputs[index];
+    }
+    att->output_mode      = output_mode;
+    att->extended_scene   = output_mode != NUCLEUS_OUTPUT_SDR;
     att->widthPx          = phys_w;
     att->heightPx         = phys_h;
     att->scale            = (float) (bufferScale > 0 ? bufferScale : 1);
+    atomic_store(&att->output_generation, 1);
+    atomic_store(&att->presented_frames, 0);
+    /* The registry listener points at stack-owned bind_state. All globals we
+     * need have been bound, so destroy the registry before returning instead
+     * of leaving a dangling listener behind. Existing global proxies remain
+     * valid for the connection lifetime. */
+    if (registry && p_wl_proxy_destroy) {
+        p_wl_proxy_destroy(registry);
+        registry = NULL;
+        att->wl_registry = NULL;
+    }
     /* Match GTK's integer surface scale so the `logical × scale` px buffer is
      * read as `logical` surface units (no oversize, input stays calibrated). */
     wl_set_buffer_scale(att, bufferScale);
@@ -1362,6 +2342,8 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeAttachWayland(
 
 fail_after_subsurface:
     /* Failure path: tear down the subsurface chain in destruction order. */
+    discard_scrgb_surface_state(&bind_state);
+    destroy_bind_extension_globals(&bind_state);
     p_wl_proxy_marshal_flags(subsurface, WL_SUBSURFACE_DESTROY, NULL,
         p_wl_proxy_get_version(subsurface), WL_MARSHAL_FLAG_DESTROY);
     p_wl_proxy_marshal_flags(child_surface, WL_SURFACE_DESTROY, NULL,
@@ -1381,6 +2363,10 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeDetach(
     EglAttachment *att = (EglAttachment *) (uintptr_t) handle;
     if (!att) return;
     if (att->display) {
+        if (att->context && att->surface &&
+            p_eglMakeCurrent(att->display, att->surface, att->surface, att->context)) {
+            destroy_pq_resources(att);
+        }
         p_eglMakeCurrent(att->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         if (att->surface) p_eglDestroySurface(att->display, att->surface);
         if (att->context) p_eglDestroyContext(att->display, att->context);
@@ -1401,6 +2387,22 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeDetach(
     if (att->wl_window && p_wl_egl_window_destroy) {
         p_wl_egl_window_destroy(att->wl_window);
     }
+    while (att->wl_feedback_count > 0) {
+        PresentationFeedbackData *feedback =
+            att->wl_feedbacks[att->wl_feedback_count - 1];
+        release_presentation_feedback(feedback);
+    }
+    destroy_color_protocol_object(&att->wl_scrgb_description);
+    destroy_color_protocol_object(&att->wl_color_surface);
+    destroy_color_protocol_object(&att->wl_color_manager);
+    destroy_color_protocol_object(&att->wl_presentation);
+    for (uint32_t index = 0; index < att->wl_output_count; index++) {
+        if (att->wl_outputs[index] && p_wl_proxy_destroy) {
+            p_wl_proxy_destroy(att->wl_outputs[index]);
+            att->wl_outputs[index] = NULL;
+        }
+    }
+    att->wl_output_count = 0;
     if (att->wl_subsurface && p_wl_proxy_marshal_flags) {
         p_wl_proxy_marshal_flags(att->wl_subsurface, WL_SUBSURFACE_DESTROY,
             NULL, p_wl_proxy_get_version(att->wl_subsurface),
@@ -1475,6 +2477,9 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeResize(
          * buffer is still read as `logical` surface units. Queued state, lands
          * with the next eglSwapBuffers commit. */
         wl_set_buffer_scale(att, (int) (scale + 0.5f));
+    }
+    if (att->output_mode == NUCLEUS_OUTPUT_PQ) {
+        resize_pq_scene_target(att, att->widthPx, att->heightPx);
     }
     /* If we render straight into the GTK X window, the EGL surface follows
      * automatically (GTK already issues XResizeWindow on the parent). */
@@ -1588,14 +2593,109 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeSetOpaqueRegio
         p_wl_proxy_get_version(region), WL_MARSHAL_FLAG_DESTROY);
 }
 
-JNIEXPORT void JNICALL
+JNIEXPORT jboolean JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativePresent(
     JNIEnv *env, jclass clazz, jlong handle)
 {
     (void) env; (void) clazz;
     EglAttachment *att = (EglAttachment *) (uintptr_t) handle;
-    if (!att) return;
-    p_eglSwapBuffers(att->display, att->surface);
+    if (!att) return JNI_FALSE;
+    present_pq_scene(att);
+    if (att->wl_presentation && att->wl_child_surface &&
+        att->wl_feedback_count < 64) {
+        PresentationFeedbackData *feedback_data =
+            (PresentationFeedbackData *) calloc(1, sizeof(PresentationFeedbackData));
+        wl_proxy *feedback = p_wl_proxy_marshal_flags(
+            att->wl_presentation,
+            NUCLEUS_PRESENTATION_FEEDBACK,
+            &nucleus_presentation_feedback_interface,
+            p_wl_proxy_get_version(att->wl_presentation),
+            0,
+            att->wl_child_surface,
+            NULL);
+        if (feedback && feedback_data) {
+            feedback_data->attachment = att;
+            feedback_data->proxy = feedback;
+            att->wl_feedbacks[att->wl_feedback_count++] = feedback_data;
+            if (att->wl_queue) p_wl_proxy_set_queue(feedback, att->wl_queue);
+            if (p_wl_proxy_add_listener(
+                    feedback,
+                    (void (**)(void)) nucleus_presentation_feedback_listener,
+                    feedback_data) != 0) {
+                release_presentation_feedback(feedback_data);
+            }
+        } else {
+            if (feedback && p_wl_proxy_destroy) p_wl_proxy_destroy(feedback);
+            free(feedback_data);
+        }
+    }
+    EGLBoolean presented = p_eglSwapBuffers(att->display, att->surface);
+    if (presented && (!att->wl_child_surface || !att->wl_presentation)) {
+        /* X11 has no Wayland presentation feedback. Wayland SDR keeps its
+         * established swap-completion fallback when the stable presentation
+         * protocol is unavailable; an HDR scene never reaches this branch on
+         * a conforming compositor and therefore cannot be falsely confirmed. */
+        if (!att->wl_child_surface || !att->extended_scene) {
+            atomic_fetch_add(&att->presented_frames, 1);
+        }
+    }
+    if (att->wl_display_conn && p_wl_display_flush) {
+        p_wl_display_flush(att->wl_display_conn);
+    }
+    return presented ? JNI_TRUE : JNI_FALSE;
+}
+
+static void dispatch_pending_presentation_feedback(EglAttachment *att) {
+    if (!att || !att->wl_display_conn || !att->wl_queue ||
+        !p_wl_display_dispatch_queue_pending) return;
+    p_wl_display_dispatch_queue_pending(att->wl_display_conn, att->wl_queue);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeUsesExtendedScene(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void) env; (void) clazz;
+    EglAttachment *att = (EglAttachment *) (uintptr_t) handle;
+    return att && att->extended_scene ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeFramebufferId(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void) env; (void) clazz;
+    EglAttachment *att = (EglAttachment *) (uintptr_t) handle;
+    return att ? (jint) att->pq_scene_framebuffer : 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeOutputMode(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void) env; (void) clazz;
+    EglAttachment *att = (EglAttachment *) (uintptr_t) handle;
+    return att ? (jint) att->output_mode : NUCLEUS_OUTPUT_SDR;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativeOutputGeneration(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void) env; (void) clazz;
+    EglAttachment *att = (EglAttachment *) (uintptr_t) handle;
+    dispatch_pending_presentation_feedback(att);
+    return att ? (jlong) atomic_load(&att->output_generation) : 0;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoEglBridge_nativePresentedFrameCount(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void) env; (void) clazz;
+    EglAttachment *att = (EglAttachment *) (uintptr_t) handle;
+    dispatch_pending_presentation_feedback(att);
+    return att ? (jlong) atomic_load(&att->presented_frames) : 0;
 }
 
 JNIEXPORT void JNICALL

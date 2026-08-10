@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package dev.nucleusframework.window.tao
 
 import androidx.compose.foundation.layout.Box
@@ -15,12 +17,16 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.skiaCanvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.IntSize
+import org.jetbrains.skia.ColorFilter
+import org.jetbrains.skia.ColorMatrix
 import org.jetbrains.skia.FilterMipmap
 import org.jetbrains.skia.FilterMode
 import org.jetbrains.skia.Image
 import org.jetbrains.skia.MipmapMode
+import org.jetbrains.skia.Paint
 import org.jetbrains.skia.Rect
 import org.jetbrains.skia.SamplingMode
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -31,7 +37,51 @@ import kotlin.math.roundToInt
  * [nucleusDmaBufTextureSource] / [nucleusYuvDmaBufTextureSource] /
  * [nucleusEglImageTextureSource] (Linux).
  */
-public sealed interface TextureViewSource
+public sealed interface TextureViewSource {
+    /** Colour encoding and alpha contract of the producer pixels. */
+    public val colorInfo: TextureColorInfo
+}
+
+/** Encoding of RGB values supplied by a [TextureViewSource]. */
+public enum class TextureColorEncoding {
+    /** Standard nonlinear sRGB values, normally backed by an 8-bit texture. */
+    SRGB,
+
+    /** Linear sRGB values that may be negative or greater than `1.0`. */
+    EXTENDED_LINEAR_SRGB,
+}
+
+/**
+ * Colour metadata carried with every external texture.
+ *
+ * In [EXTENDED_LINEAR_SRGB], `1.0` means the producer's SDR reference white,
+ * not the maximum value of the texture. Values outside `[0, 1]` are valid and
+ * must survive import and scene composition. [sdrWhiteLevelNits] may be omitted
+ * when the producer follows the host's current reference white.
+ */
+public data class TextureColorInfo(
+    public val encoding: TextureColorEncoding,
+    /** All current TextureView backends require producer pixels to be premultiplied. */
+    public val premultipliedAlpha: Boolean = true,
+    public val sdrWhiteLevelNits: Float? = null,
+) {
+    init {
+        require(premultipliedAlpha) { "TextureView supports premultiplied alpha only" }
+        require(sdrWhiteLevelNits == null || (sdrWhiteLevelNits.isFinite() && sdrWhiteLevelNits > 0f)) {
+            "sdrWhiteLevelNits must be finite and positive"
+        }
+    }
+
+    public companion object {
+        /** Conventional premultiplied 8-bit sRGB source. */
+        public val SRGB_PREMULTIPLIED: TextureColorInfo =
+            TextureColorInfo(TextureColorEncoding.SRGB)
+
+        /** Premultiplied half-float extended-linear sRGB source. */
+        public val EXTENDED_LINEAR_SRGB_PREMULTIPLIED: TextureColorInfo =
+            TextureColorInfo(TextureColorEncoding.EXTENDED_LINEAR_SRGB)
+    }
+}
 
 /**
  * Windows source: a D3D11 texture shared through a **legacy** DXGI
@@ -59,12 +109,27 @@ public fun nucleusD3D11SharedTextureSource(
     sharedHandle: Long,
     widthPx: Int,
     heightPx: Int,
-): TextureViewSource = D3D11SharedTextureSource(sharedHandle, widthPx, heightPx)
+): TextureViewSource =
+    nucleusD3D11SharedTextureSource(
+        sharedHandle = sharedHandle,
+        widthPx = widthPx,
+        heightPx = heightPx,
+        colorInfo = TextureColorInfo.SRGB_PREMULTIPLIED,
+    )
+
+/** Colour-managed overload of [nucleusD3D11SharedTextureSource]. */
+public fun nucleusD3D11SharedTextureSource(
+    sharedHandle: Long,
+    widthPx: Int,
+    heightPx: Int,
+    colorInfo: TextureColorInfo,
+): TextureViewSource = D3D11SharedTextureSource(sharedHandle, widthPx, heightPx, colorInfo)
 
 internal data class D3D11SharedTextureSource(
     val sharedHandle: Long,
     val widthPx: Int,
     val heightPx: Int,
+    override val colorInfo: TextureColorInfo,
 ) : TextureViewSource
 
 /**
@@ -79,7 +144,7 @@ internal data class D3D11SharedTextureSource(
  * extended-linear sRGB. [widthPx] × [heightPx] must match its plane dimensions
  * exactly (Metal validates the texture descriptor against them). Half-float
  * sources preserve values outside `[0, 1]` when their containing Tao window is
- * opened with `macOSExtendedDynamicRange = true`; an SDR window intentionally
+ * opened with `dynamicRangeMode = EXTENDED_IF_AVAILABLE`; an SDR window intentionally
  * maps the result into its SDR swapchain.
  *
  * The surface must also be backed by memory the window's GPU can share — true
@@ -98,12 +163,27 @@ public fun nucleusIOSurfaceTextureSource(
     ioSurface: Long,
     widthPx: Int,
     heightPx: Int,
-): TextureViewSource = IOSurfaceTextureSource(ioSurface, widthPx, heightPx)
+): TextureViewSource =
+    nucleusIOSurfaceTextureSource(
+        ioSurface = ioSurface,
+        widthPx = widthPx,
+        heightPx = heightPx,
+        colorInfo = TextureColorInfo.SRGB_PREMULTIPLIED,
+    )
+
+/** Colour-managed overload of [nucleusIOSurfaceTextureSource]. */
+public fun nucleusIOSurfaceTextureSource(
+    ioSurface: Long,
+    widthPx: Int,
+    heightPx: Int,
+    colorInfo: TextureColorInfo,
+): TextureViewSource = IOSurfaceTextureSource(ioSurface, widthPx, heightPx, colorInfo)
 
 internal data class IOSurfaceTextureSource(
     val ioSurface: Long,
     val widthPx: Int,
     val heightPx: Int,
+    override val colorInfo: TextureColorInfo,
 ) : TextureViewSource
 
 /**
@@ -120,7 +200,7 @@ internal data class IOSurfaceTextureSource(
  * [nucleusIOSurfaceTextureSource] in that case. Pixel format must be
  * `BGRA8Unorm`, `RGBA8Unorm` (sRGB variants included), or `RGBA16Float` with
  * premultiplied alpha. `RGBA16Float` is interpreted as extended-linear sRGB;
- * use `macOSExtendedDynamicRange = true` on the containing Tao window to keep
+ * use `dynamicRangeMode = EXTENDED_IF_AVAILABLE` on the containing Tao window to keep
  * values above SDR white through presentation. Same frame-copy and
  * synchronization contract as [nucleusIOSurfaceTextureSource].
  */
@@ -128,12 +208,27 @@ public fun nucleusMetalTextureSource(
     metalTexture: Long,
     widthPx: Int,
     heightPx: Int,
-): TextureViewSource = MetalTextureSource(metalTexture, widthPx, heightPx)
+): TextureViewSource =
+    nucleusMetalTextureSource(
+        metalTexture = metalTexture,
+        widthPx = widthPx,
+        heightPx = heightPx,
+        colorInfo = TextureColorInfo.SRGB_PREMULTIPLIED,
+    )
+
+/** Colour-managed overload of [nucleusMetalTextureSource]. */
+public fun nucleusMetalTextureSource(
+    metalTexture: Long,
+    widthPx: Int,
+    heightPx: Int,
+    colorInfo: TextureColorInfo,
+): TextureViewSource = MetalTextureSource(metalTexture, widthPx, heightPx, colorInfo)
 
 internal data class MetalTextureSource(
     val metalTexture: Long,
     val widthPx: Int,
     val heightPx: Int,
+    override val colorInfo: TextureColorInfo,
 ) : TextureViewSource
 
 /**
@@ -160,6 +255,9 @@ public object NucleusDrmFormat {
 
     /** `XB24` — `DRM_FORMAT_XBGR8888` (no alpha). */
     public const val XBGR8888: Int = 0x34324258
+
+    /** `AB4H` — `DRM_FORMAT_ABGR16161616F`, half-float RGBA in memory. */
+    public const val ABGR16161616F: Int = 0x48344241
 
     /** `DRM_FORMAT_MOD_INVALID` — "the buffer layout is implicit". */
     public const val MODIFIER_INVALID: Long = 0x00FFFFFFFFFFFFFFL
@@ -206,7 +304,30 @@ public fun nucleusDmaBufTextureSource(
     fourcc: Int = NucleusDrmFormat.ARGB8888,
     offset: Int = 0,
     modifier: Long = NucleusDrmFormat.MODIFIER_INVALID,
-): TextureViewSource = DmaBufTextureSource(fd, widthPx, heightPx, stride, fourcc, offset, modifier)
+): TextureViewSource =
+    nucleusDmaBufTextureSource(
+        fd = fd,
+        widthPx = widthPx,
+        heightPx = heightPx,
+        stride = stride,
+        fourcc = fourcc,
+        offset = offset,
+        modifier = modifier,
+        colorInfo = TextureColorInfo.SRGB_PREMULTIPLIED,
+    )
+
+/** Colour-managed overload of [nucleusDmaBufTextureSource]. */
+@Suppress("LongParameterList")
+public fun nucleusDmaBufTextureSource(
+    fd: Int,
+    widthPx: Int,
+    heightPx: Int,
+    stride: Int,
+    fourcc: Int = NucleusDrmFormat.ARGB8888,
+    offset: Int = 0,
+    modifier: Long = NucleusDrmFormat.MODIFIER_INVALID,
+    colorInfo: TextureColorInfo,
+): TextureViewSource = DmaBufTextureSource(fd, widthPx, heightPx, stride, fourcc, offset, modifier, colorInfo)
 
 internal data class DmaBufTextureSource(
     val fd: Int,
@@ -216,6 +337,7 @@ internal data class DmaBufTextureSource(
     val fourcc: Int,
     val offset: Int,
     val modifier: Long,
+    override val colorInfo: TextureColorInfo,
 ) : TextureViewSource
 
 /**
@@ -234,12 +356,27 @@ public fun nucleusEglImageTextureSource(
     eglImage: Long,
     widthPx: Int,
     heightPx: Int,
-): TextureViewSource = EglImageTextureSource(eglImage, widthPx, heightPx)
+): TextureViewSource =
+    nucleusEglImageTextureSource(
+        eglImage = eglImage,
+        widthPx = widthPx,
+        heightPx = heightPx,
+        colorInfo = TextureColorInfo.SRGB_PREMULTIPLIED,
+    )
+
+/** Colour-managed overload of [nucleusEglImageTextureSource]. */
+public fun nucleusEglImageTextureSource(
+    eglImage: Long,
+    widthPx: Int,
+    heightPx: Int,
+    colorInfo: TextureColorInfo,
+): TextureViewSource = EglImageTextureSource(eglImage, widthPx, heightPx, colorInfo)
 
 internal data class EglImageTextureSource(
     val eglImage: Long,
     val widthPx: Int,
     val heightPx: Int,
+    override val colorInfo: TextureColorInfo,
 ) : TextureViewSource
 
 /**
@@ -345,7 +482,29 @@ public fun nucleusYuvDmaBufTextureSource(
     }
     // Copied: the source is a registry key, so it must not change under the
     // import once a caller keeps mutating the list it passed.
-    return YuvDmaBufTextureSource(widthPx, heightPx, format, planes.toList(), colorSpace)
+    return YuvDmaBufTextureSource(
+        widthPx,
+        heightPx,
+        format,
+        planes.toList(),
+        colorSpace,
+        TextureColorInfo.SRGB_PREMULTIPLIED,
+    )
+}
+
+/** Colour-managed overload of [nucleusYuvDmaBufTextureSource]. */
+public fun nucleusYuvDmaBufTextureSource(
+    widthPx: Int,
+    heightPx: Int,
+    format: NucleusYuvFormat,
+    planes: List<NucleusDmaBufPlane>,
+    colorSpace: NucleusYuvColorSpace = NucleusYuvColorSpace.BT709_LIMITED,
+    colorInfo: TextureColorInfo,
+): TextureViewSource {
+    require(planes.size == format.planeCount) {
+        "$format needs ${format.planeCount} DMA-BUF planes, got ${planes.size}"
+    }
+    return YuvDmaBufTextureSource(widthPx, heightPx, format, planes.toList(), colorSpace, colorInfo)
 }
 
 internal data class YuvDmaBufTextureSource(
@@ -354,6 +513,7 @@ internal data class YuvDmaBufTextureSource(
     val format: NucleusYuvFormat,
     val planes: List<NucleusDmaBufPlane>,
     val colorSpace: NucleusYuvColorSpace,
+    override val colorInfo: TextureColorInfo,
 ) : TextureViewSource
 
 /**
@@ -372,6 +532,13 @@ public class TextureViewController {
 
     /** Acquire fence of the newest frame, or [NO_FENCE]. Guarded by `this`. */
     private var acquireFence = NO_FENCE
+
+    /**
+     * Fence signalled after the host GPU finishes sampling this frame. This is
+     * populated by the Linux scene host after Skia's `flushAndSubmit`, then
+     * transferred to a streaming producer when its frame lease is released.
+     */
+    private var releaseFence = NO_FENCE
 
     /**
      * Whether a fence is worth looking for at all. Read once per draw pass by
@@ -424,6 +591,29 @@ public class TextureViewController {
         }
     }
 
+    /** Replaces the fence for an earlier sampling pass with a newer one. */
+    internal fun replaceReleaseFence(fenceFd: Int) {
+        synchronized(this) {
+            if (releaseFence != NO_FENCE) closeAcquireFenceFd(releaseFence)
+            releaseFence = if (fenceFd != NO_FENCE && canOwnAcquireFence()) fenceFd else NO_FENCE
+        }
+    }
+
+    /** Transfers ownership of the latest release fence to the frame producer. */
+    internal fun takeReleaseFence(): Int =
+        synchronized(this) {
+            val fenceFd = releaseFence
+            releaseFence = NO_FENCE
+            fenceFd
+        }
+
+    /** Closes every fence still owned by a non-streaming controller. */
+    internal fun releaseFences() {
+        releaseAcquireFence()
+        val fenceFd = takeReleaseFence()
+        if (fenceFd != NO_FENCE) closeAcquireFenceFd(fenceFd)
+    }
+
     private fun signalFrame(fenceFd: Int) {
         // Synchronized so concurrent producers still yield distinct,
         // monotonic stamps (a lost increment could suppress a redraw).
@@ -452,7 +642,7 @@ public class TextureViewController {
 public fun rememberTextureViewController(): TextureViewController {
     val controller = remember { TextureViewController() }
     DisposableEffect(controller) {
-        onDispose { controller.releaseAcquireFence() }
+        onDispose { controller.releaseFences() }
     }
     return controller
 }
@@ -530,14 +720,87 @@ internal fun DrawScope.drawExternalTexture(
     contentScale: ContentScale,
     alignment: Alignment,
     sampling: SamplingMode,
+    paint: Paint? = null,
 ) {
     val dstRect = externalTextureDstRect(srcRect, contentScale, alignment)
     clipRect {
         drawIntoCanvas { canvas ->
-            canvas.skiaCanvas.drawImageRect(image, srcRect, dstRect, sampling, null, true)
+            canvas.skiaCanvas.drawImageRect(image, srcRect, dstRect, sampling, paint, true)
         }
     }
 }
+
+/**
+ * Paint that converts a producer's extended-linear reference-white units into
+ * the enclosing scene's units. For example, scRGB produced with 203-nit white
+ * is multiplied by `203 / hostWhiteNits`; alpha is deliberately left intact.
+ * The matrix operates on floating-point Skia values and therefore neither
+ * clamps negative components nor highlights above `1.0`.
+ */
+@Composable
+internal fun rememberExternalTextureColorPaint(colorInfo: TextureColorInfo): Paint? {
+    val host = currentTextureViewHostCapabilities()
+    val scale = textureReferenceWhiteScale(colorInfo, host.sdrWhiteLevelNits)
+    val resources =
+        remember(scale) {
+            if (abs(scale - 1f) <= REFERENCE_WHITE_SCALE_EPSILON) {
+                null
+            } else {
+                val filter =
+                    ColorFilter.makeMatrix(
+                        ColorMatrix(
+                            scale,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            scale,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            scale,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            1f,
+                            0f,
+                        ),
+                    )
+                ExternalTextureColorPaint(Paint().apply { colorFilter = filter }, filter)
+            }
+        }
+    DisposableEffect(resources) {
+        onDispose { resources?.close() }
+    }
+    return resources?.paint
+}
+
+internal fun textureReferenceWhiteScale(
+    colorInfo: TextureColorInfo,
+    hostSdrWhiteLevelNits: Float?,
+): Float {
+    if (colorInfo.encoding != TextureColorEncoding.EXTENDED_LINEAR_SRGB) return 1f
+    val producerWhite = colorInfo.sdrWhiteLevelNits ?: return 1f
+    val hostWhite = hostSdrWhiteLevelNits?.takeIf { it.isFinite() && it > 0f } ?: return 1f
+    return producerWhite / hostWhite
+}
+
+private class ExternalTextureColorPaint(
+    val paint: Paint,
+    private val filter: ColorFilter,
+) {
+    fun close() {
+        paint.close()
+        filter.close()
+    }
+}
+
+private const val REFERENCE_WHITE_SCALE_EPSILON = 0.0001f
 
 /**
  * Where a texture of [srcRect]'s size lands inside the composable's bounds under
