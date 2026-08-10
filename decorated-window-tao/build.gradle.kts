@@ -151,21 +151,44 @@ val verifyPrebuiltTaoNativeArtifacts by tasks.registering(Exec::class) {
     enabled = usePrebuiltNativeArtifacts
     inputs.files(currentPlatformNativeOutputs)
     workingDir(projectDir)
-    val verificationScript =
-        """
-        missing=0
-        for file in "${'$'}@"; do
-          if [ ! -s "${'$'}file" ]; then
-            printf 'Missing or empty prebuilt Tao native artifact: %s\n' "${'$'}file" >&2
-            missing=1
-          fi
-        done
-        exit "${'$'}missing"
-        """.trimIndent()
-    commandLine(
-        listOf("bash", "-c", verificationScript, "verify-prebuilt-tao") +
-            currentPlatformNativeOutputs.map { it.relativeTo(projectDir).invariantSeparatorsPath },
-    )
+    val relativePaths =
+        currentPlatformNativeOutputs.map { it.relativeTo(projectDir).invariantSeparatorsPath }
+    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+        val powerShellPaths = relativePaths.joinToString { "'${it.replace("'", "''")}'" }
+        val verificationScript =
+            """
+            ${'$'}missing = @($powerShellPaths) | Where-Object {
+              -not (Test-Path -LiteralPath ${'$'}_ -PathType Leaf) -or (Get-Item -LiteralPath ${'$'}_).Length -le 0
+            }
+            foreach (${'$'}file in ${'$'}missing) {
+              [Console]::Error.WriteLine(('Missing or empty prebuilt Tao native artifact: {0}' -f ${'$'}file))
+            }
+            if (${'$'}missing.Count -gt 0) { exit 1 }
+            """.trimIndent()
+        commandLine(
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            verificationScript,
+        )
+    } else {
+        val verificationScript =
+            """
+            missing=0
+            for file in "${'$'}@"; do
+              if [ ! -s "${'$'}file" ]; then
+                printf 'Missing or empty prebuilt Tao native artifact: %s\n' "${'$'}file" >&2
+                missing=1
+              fi
+            done
+            exit "${'$'}missing"
+            """.trimIndent()
+        commandLine(
+            listOf("bash", "-c", verificationScript, "verify-prebuilt-tao") + relativePaths,
+        )
+    }
 }
 
 val buildNativeMacOs by tasks.registering(Exec::class) {
