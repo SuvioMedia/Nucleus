@@ -23,6 +23,7 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.rememberWindowState
 import dev.nucleusframework.core.runtime.Platform
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.styling.LocalDecoratedWindowStyle
 import dev.nucleusframework.window.tao.ffi.NativeTaoBridge
 import dev.nucleusframework.window.tao.ffi.NativeTaoMacOsDecoBridge
@@ -50,6 +51,137 @@ import kotlin.math.roundToInt
  *    declared in the parent application scope and read inside `content`
  *    propagates via snapshot but does not share a CompositionContext.
  */
+@Suppress("LongParameterList", "FunctionNaming")
+@Composable
+public fun ApplicationScope.DecoratedWindow(
+    onCloseRequest: () -> Unit,
+    state: WindowState = rememberWindowState(),
+    title: String = "",
+    icon: Painter? = null,
+    minimumSize: DpSize? = null,
+    visible: Boolean = true,
+    resizable: Boolean = true,
+    enabled: Boolean = true,
+    focusable: Boolean = true,
+    alwaysOnTop: Boolean = false,
+    isDialog: Boolean = false,
+    undecorated: Boolean = false,
+    transparent: Boolean = false,
+    popupFor: TaoWindow? = null,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
+    nativePopupLayers: Boolean = false,
+    macOSStyle: MacOSStyle = MacOSStyle.Classic,
+    hiddenFromDock: Boolean = false,
+    compositionLocalContext: CompositionLocalContext? = null,
+    dynamicRangeMode: WindowDynamicRangeMode = WindowDynamicRangeMode.STANDARD,
+    content: @Composable TaoDecoratedWindowScope.() -> Unit,
+) {
+    @Suppress("DEPRECATION")
+    DecoratedWindow(
+        onCloseRequest = onCloseRequest,
+        state = state,
+        title = title,
+        icon = icon,
+        minimumSize = minimumSize,
+        visible = visible,
+        resizable = resizable,
+        enabled = enabled,
+        focusable = focusable,
+        alwaysOnTop = alwaysOnTop,
+        isDialog = isDialog,
+        undecorated = undecorated,
+        transparent = transparent,
+        popupFor = popupFor,
+        onPreviewKeyEvent = onPreviewKeyEvent,
+        onKeyEvent = onKeyEvent,
+        nativePopupLayers = nativePopupLayers,
+        macOSStyle = macOSStyle,
+        hiddenFromDock = hiddenFromDock,
+        macOSExtendedDynamicRange = false,
+        compositionLocalContext = compositionLocalContext,
+        dynamicRangeMode = dynamicRangeMode,
+        content = content,
+    )
+}
+
+/** Deprecated binary-compatible forwarding overload retained for one fork release. */
+@Deprecated(
+    message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
+    replaceWith =
+        ReplaceWith(
+            "DecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
+)
+@Suppress("LongParameterList", "FunctionNaming")
+@Composable
+public fun ApplicationScope.DecoratedWindow(
+    onCloseRequest: () -> Unit,
+    state: WindowState = rememberWindowState(),
+    title: String = "",
+    icon: Painter? = null,
+    minimumSize: DpSize? = null,
+    visible: Boolean = true,
+    resizable: Boolean = true,
+    enabled: Boolean = true,
+    focusable: Boolean = true,
+    alwaysOnTop: Boolean = false,
+    isDialog: Boolean = false,
+    undecorated: Boolean = false,
+    transparent: Boolean = false,
+    popupFor: TaoWindow? = null,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
+    nativePopupLayers: Boolean = false,
+    macOSStyle: MacOSStyle = MacOSStyle.Classic,
+    hiddenFromDock: Boolean = false,
+    macOSExtendedDynamicRange: Boolean,
+    compositionLocalContext: CompositionLocalContext? = null,
+    content: @Composable TaoDecoratedWindowScope.() -> Unit,
+) {
+    @Suppress("DEPRECATION")
+    DecoratedWindow(
+        onCloseRequest = onCloseRequest,
+        state = state,
+        title = title,
+        icon = icon,
+        minimumSize = minimumSize,
+        visible = visible,
+        resizable = resizable,
+        enabled = enabled,
+        focusable = focusable,
+        alwaysOnTop = alwaysOnTop,
+        isDialog = isDialog,
+        undecorated = undecorated,
+        transparent = transparent,
+        popupFor = popupFor,
+        onPreviewKeyEvent = onPreviewKeyEvent,
+        onKeyEvent = onKeyEvent,
+        nativePopupLayers = nativePopupLayers,
+        macOSStyle = macOSStyle,
+        hiddenFromDock = hiddenFromDock,
+        macOSExtendedDynamicRange = macOSExtendedDynamicRange,
+        compositionLocalContext = compositionLocalContext,
+        dynamicRangeMode =
+            if (macOSExtendedDynamicRange) {
+                WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE
+            } else {
+                WindowDynamicRangeMode.STANDARD
+            },
+        content = content,
+    )
+}
+
+/** Compatibility overload retained for one fork release. Prefer [WindowDynamicRangeMode]. */
+@Deprecated(
+    message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
+    replaceWith =
+        ReplaceWith(
+            "DecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
+)
 @Suppress("LongParameterList", "FunctionNaming", "LongMethod", "CyclomaticComplexMethod")
 @Composable
 public fun ApplicationScope.DecoratedWindow(
@@ -124,10 +256,20 @@ public fun ApplicationScope.DecoratedWindow(
      * Applied at window creation.
      */
     hiddenFromDock: Boolean = false,
+    /**
+     * macOS only: use an `RGBA16Float` extended-linear sRGB swapchain and opt
+     * the `CAMetalLayer` into Extended Dynamic Range presentation. This is the
+     * presentation counterpart of an `RGBA16Float` [TextureView] source: both
+     * are required to preserve values above SDR white through the window.
+     *
+     * Deprecated compatibility switch. Prefer [dynamicRangeMode].
+     */
+    macOSExtendedDynamicRange: Boolean,
     // Parent composition locals bridged into this window's own ComposeScene from
     // the first composition (see [openDecoratedWindow]). Defaults to null for
     // top-level windows; [DecoratedDialog] forwards its parent's locals here.
     compositionLocalContext: CompositionLocalContext? = null,
+    dynamicRangeMode: WindowDynamicRangeMode,
     content: @Composable TaoDecoratedWindowScope.() -> Unit,
 ) {
     val latestOnClose by rememberUpdatedState(onCloseRequest)
@@ -153,6 +295,7 @@ public fun ApplicationScope.DecoratedWindow(
                 var position: WindowPosition? = null
                 var placement: WindowPlacement? = null
                 var isMinimized: Boolean? = null
+                var fullscreenTransition: Boolean? = null
             }
         }
 
@@ -197,6 +340,8 @@ public fun ApplicationScope.DecoratedWindow(
                     nativePopupLayers = nativePopupLayers,
                     macOSStyle = macOSStyle,
                     hiddenFromDock = hiddenFromDock,
+                    macOSExtendedDynamicRange = macOSExtendedDynamicRange,
+                    dynamicRangeMode = dynamicRangeMode,
                     initialCompositionLocalContext = compositionLocalContext,
                     content = {
                         val backgroundArgb = latestWindowBackgroundArgb.value
@@ -213,6 +358,23 @@ public fun ApplicationScope.DecoratedWindow(
                         latestContent.invoke(this)
                     },
                 )
+
+            // AppKit emits intermediate resize events while its native fullscreen animation is
+            // still in flight. Track the authoritative will/did notifications so those resizes
+            // cannot publish Floating and immediately cancel or re-enter the transition.
+            w.onFullscreenTransition { fullscreen, completed ->
+                applied.fullscreenTransition = fullscreen.takeUnless { completed }
+                val placement =
+                    when {
+                        fullscreen -> WindowPlacement.Fullscreen
+                        w.isMaximized -> WindowPlacement.Maximized
+                        else -> WindowPlacement.Floating
+                    }
+                if (placement != applied.placement) {
+                    applied.placement = placement
+                    latestState.placement = placement
+                }
+            }
 
             // Initial placement / minimised flag are applied imperatively here
             // (Maximized is handled at builder time, above).
@@ -245,7 +407,15 @@ public fun ApplicationScope.DecoratedWindow(
                 // sync when the user exits fullscreen via Esc / green button or
                 // hits the system maximize gesture.
                 val placementNow =
-                    when {
+                    applied.fullscreenTransition?.let { fullscreen ->
+                        if (fullscreen) {
+                            WindowPlacement.Fullscreen
+                        } else if (w.isMaximized) {
+                            WindowPlacement.Maximized
+                        } else {
+                            WindowPlacement.Floating
+                        }
+                    } ?: when {
                         w.isFullscreen -> WindowPlacement.Fullscreen
                         w.isMaximized -> WindowPlacement.Maximized
                         else -> WindowPlacement.Floating

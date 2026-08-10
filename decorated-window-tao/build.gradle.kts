@@ -1,5 +1,6 @@
 import org.apache.tools.ant.taskdefs.condition.Os
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.File
 
 plugins {
     kotlin("jvm")
@@ -65,16 +66,141 @@ kotlin {
 // ── Native build ────────────────────────────────────────────────────────────
 // Tao + jni crate + per-platform helpers (Metal on macOS, WGL + WndProc deco
 // on Windows). Native binaries ship in src/main/resources/nucleus/native/.
+// CI downloads them in a separate job and opts into the prebuilt mode below;
+// normal local builds continue to use the declared native source inputs.
+
+val usePrebuiltNativeArtifacts =
+    providers
+        .gradleProperty("nucleus.prebuiltNativeArtifacts")
+        .map {
+            it.toBooleanStrictOrNull()
+                ?: error("Gradle property nucleus.prebuiltNativeArtifacts must be true or false.")
+        }.getOrElse(false)
+
+val nativeOutputDir = file("src/main/resources/nucleus/native")
+
+fun nativeOutputFiles(
+    platforms: List<String>,
+    fileNames: List<String>,
+): List<File> =
+    platforms.flatMap { platform ->
+        fileNames.map { fileName -> nativeOutputDir.resolve("$platform/$fileName") }
+    }
+
+val macOsNativeFileNames =
+    listOf(
+        "libnucleus_tao.dylib",
+        "libnucleus_tao_metal.dylib",
+        "libnucleus_tao_dnd.dylib",
+        "libnucleus_tao_macos_deco.dylib",
+        "libnucleus_tao_macos_popup.dylib",
+        "libnucleus_tao_macos_native_view.dylib",
+    )
+val windowsNativeFileNames =
+    listOf(
+        "nucleus_tao.dll",
+        "nucleus_tao_windows_deco.dll",
+        "nucleus_tao_gl.dll",
+        "nucleus_tao_dnd.dll",
+        "nucleus_tao_windows_native_view.dll",
+        "libEGL.dll",
+        "libGLESv2.dll",
+    )
+val linuxNativeFileNames =
+    listOf(
+        "libnucleus_tao.so",
+        "libnucleus_tao_egl.so",
+        "libnucleus_tao_linux_widget.so",
+        "libnucleus_tao_linux_popup.so",
+    )
+
+val macOsNativeOutputs =
+    nativeOutputFiles(
+        platforms = listOf("darwin-aarch64", "darwin-x64"),
+        fileNames = macOsNativeFileNames,
+    )
+val windowsNativeOutputs =
+    nativeOutputFiles(
+        platforms = listOf("win32-x64", "win32-aarch64"),
+        fileNames = windowsNativeFileNames,
+    )
+val linuxNativePlatform =
+    when (System.getProperty("os.arch").lowercase()) {
+        "amd64", "x86_64" -> "linux-x64"
+        "aarch64", "arm64" -> "linux-aarch64"
+        else -> null
+    }
+val linuxNativeOutputs =
+    linuxNativePlatform?.let { nativeOutputFiles(listOf(it), linuxNativeFileNames) }.orEmpty()
+
+val currentPlatformNativeOutputs =
+    when {
+        Os.isFamily(Os.FAMILY_MAC) -> macOsNativeOutputs
+        Os.isFamily(Os.FAMILY_WINDOWS) -> windowsNativeOutputs
+        Os.isFamily(Os.FAMILY_UNIX) -> linuxNativeOutputs
+        else -> emptyList()
+    }
+
+if (usePrebuiltNativeArtifacts && currentPlatformNativeOutputs.isEmpty()) {
+    error("Unsupported operating system or architecture for Tao native artifacts.")
+}
+
+val verifyPrebuiltTaoNativeArtifacts by tasks.registering(Exec::class) {
+    description = "Verifies downloaded Tao native artifacts before native compilation is skipped."
+    group = "verification"
+    enabled = usePrebuiltNativeArtifacts
+    inputs.files(currentPlatformNativeOutputs)
+    workingDir(projectDir)
+    val relativePaths =
+        currentPlatformNativeOutputs.map { it.relativeTo(projectDir).invariantSeparatorsPath }
+    if (Os.isFamily(Os.FAMILY_WINDOWS)) {
+        val powerShellPaths = relativePaths.joinToString { "'${it.replace("'", "''")}'" }
+        val verificationScript =
+            """
+            ${'$'}missing = @($powerShellPaths) | Where-Object {
+              -not (Test-Path -LiteralPath ${'$'}_ -PathType Leaf) -or (Get-Item -LiteralPath ${'$'}_).Length -le 0
+            }
+            foreach (${'$'}file in ${'$'}missing) {
+              [Console]::Error.WriteLine(('Missing or empty prebuilt Tao native artifact: {0}' -f ${'$'}file))
+            }
+            if (${'$'}missing.Count -gt 0) { exit 1 }
+            """.trimIndent()
+        commandLine(
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            verificationScript,
+        )
+    } else {
+        val verificationScript =
+            """
+            missing=0
+            for file in "${'$'}@"; do
+              if [ ! -s "${'$'}file" ]; then
+                printf 'Missing or empty prebuilt Tao native artifact: %s\n' "${'$'}file" >&2
+                missing=1
+              fi
+            done
+            exit "${'$'}missing"
+            """.trimIndent()
+        commandLine(
+            listOf("bash", "-c", verificationScript, "verify-prebuilt-tao") + relativePaths,
+        )
+    }
+}
 
 val buildNativeMacOs by tasks.registering(Exec::class) {
     description = "Compiles the Rust JNI bridge into a macOS dylib (arm64 + x86_64)"
     group = "build"
-    val outputDir = file("src/main/resources/nucleus/native")
-    val checkFile = File(outputDir, "darwin-aarch64/libnucleus_tao.dylib")
-    onlyIf { Os.isFamily(Os.FAMILY_MAC) && !checkFile.exists() }
+    enabled = !usePrebuiltNativeArtifacts
+    dependsOn(verifyPrebuiltTaoNativeArtifacts)
+    onlyIf { Os.isFamily(Os.FAMILY_MAC) }
     inputs.dir(file("src/main/native/src"))
+    inputs.dir(file("src/main/native/macos"))
     inputs.file(file("src/main/native/Cargo.toml"))
-    outputs.dir(outputDir)
+    outputs.dir(nativeOutputDir)
     workingDir(file("src/main/native/macos"))
     commandLine("bash", "build.sh")
 }
@@ -82,15 +208,13 @@ val buildNativeMacOs by tasks.registering(Exec::class) {
 val buildNativeWindows by tasks.registering(Exec::class) {
     description = "Compiles the Rust JNI bridge + WGL/Deco helpers into Windows DLLs"
     group = "build"
-    val outputDir = file("src/main/resources/nucleus/native")
-    val checkFile = File(outputDir, "win32-x64/nucleus_tao.dll")
-    onlyIf { Os.isFamily(Os.FAMILY_WINDOWS) && !checkFile.exists() }
+    enabled = !usePrebuiltNativeArtifacts
+    dependsOn(verifyPrebuiltTaoNativeArtifacts)
+    onlyIf { Os.isFamily(Os.FAMILY_WINDOWS) }
     inputs.dir(file("src/main/native/src"))
+    inputs.dir(file("src/main/native/windows"))
     inputs.file(file("src/main/native/Cargo.toml"))
-    inputs.file(file("src/main/native/windows/nucleus_tao_windows_deco.c"))
-    inputs.file(file("src/main/native/windows/nucleus_tao_gl.c"))
-    inputs.file(file("src/main/native/windows/nucleus_tao_texture.c"))
-    outputs.dir(outputDir)
+    outputs.dir(nativeOutputDir)
     workingDir(file("src/main/native/windows"))
     commandLine("cmd", "/c", ".\\build.bat")
 }
@@ -98,21 +222,39 @@ val buildNativeWindows by tasks.registering(Exec::class) {
 val buildNativeLinux by tasks.registering(Exec::class) {
     description = "Compiles the Rust JNI bridge + EGL helper into Linux .so libraries"
     group = "build"
-    val outputDir = file("src/main/resources/nucleus/native")
-    val arch = System.getProperty("os.arch").lowercase()
-    val archDir = if (arch.contains("aarch64") || arch.contains("arm64")) "linux-aarch64" else "linux-x64"
-    val checkFile = File(outputDir, "$archDir/libnucleus_tao.so")
-    onlyIf { Os.isFamily(Os.FAMILY_UNIX) && !Os.isFamily(Os.FAMILY_MAC) && !checkFile.exists() }
+    enabled = !usePrebuiltNativeArtifacts
+    dependsOn(verifyPrebuiltTaoNativeArtifacts)
+    onlyIf {
+        Os.isFamily(Os.FAMILY_UNIX) &&
+            !Os.isFamily(Os.FAMILY_MAC)
+    }
     inputs.dir(file("src/main/native/src"))
+    inputs.dir(file("src/main/native/linux"))
     inputs.file(file("src/main/native/Cargo.toml"))
-    inputs.file(file("src/main/native/linux/nucleus_tao_egl.c"))
-    inputs.file(file("src/main/native/linux/nucleus_tao_texture_linux.c"))
-    // Shared by both C translation units above: editing it alone must not leave
-    // the task UP-TO-DATE with a stale .so in the resources.
-    inputs.file(file("src/main/native/linux/nucleus_tao_egl_internal.h"))
-    outputs.dir(outputDir)
+    outputs.dir(nativeOutputDir)
     workingDir(file("src/main/native/linux"))
     commandLine("bash", "build.sh")
+}
+
+val windowsAngleRuntimeFiles =
+    listOf(
+        file("src/main/resources/nucleus/native/win32-x64/libEGL.dll"),
+        file("src/main/resources/nucleus/native/win32-x64/libGLESv2.dll"),
+        file("src/main/resources/nucleus/native/win32-aarch64/libEGL.dll"),
+        file("src/main/resources/nucleus/native/win32-aarch64/libGLESv2.dll"),
+    )
+val verifyWindowsAngleRuntime by tasks.registering {
+    description = "Verifies that published Tao artifacts contain the pinned ANGLE runtime."
+    group = "verification"
+    dependsOn(buildNativeWindows)
+    inputs.files(windowsAngleRuntimeFiles)
+    doLast {
+        val missing = windowsAngleRuntimeFiles.filterNot { it.isFile && it.length() > 0L }
+        check(missing.isEmpty()) {
+            "Missing pinned ANGLE runtime files: ${missing.joinToString { it.path }}. " +
+                "Run src/main/native/windows/fetch-angle.sh all before publishing."
+        }
+    }
 }
 
 tasks.processResources {
@@ -127,6 +269,10 @@ tasks.configureEach {
         dependsOn(buildNativeWindows)
         dependsOn(buildNativeLinux)
     }
+}
+
+tasks.matching { it.name.startsWith("publish", ignoreCase = true) }.configureEach {
+    dependsOn(verifyWindowsAngleRuntime)
 }
 
 // ── macOS standalone-popup smoke check ──────────────────────────────────────

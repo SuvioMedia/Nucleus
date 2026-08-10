@@ -189,7 +189,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
 
       - name: Run Gradle tasks
-        run: ./gradlew preMerge --continue
+        run: ./gradlew preMerge --continue "-Pnucleus.prebuiltNativeArtifacts=true"
 
   # Stage-1 offscreen Tao scene tests on the full OS matrix. These tests are
   # headless (CPU-recorded ComposeScene, no display), so plain runners work on
@@ -225,7 +225,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
 
       - name: Run Tao scene tests
-        run: ./gradlew :decorated-window-tao:test
+        run: ./gradlew :decorated-window-tao:test "-Pnucleus.prebuiltNativeArtifacts=true"
 
   # Stage-2 headful suite: real Tao windows in a single event loop per process
   # (taoHeadfulTest JavaExec). macOS/Windows runners have a real graphical
@@ -283,17 +283,17 @@ jobs:
           for i in $(seq 1 50); do xdpyinfo -display :99 >/dev/null 2>&1 && break; sleep 0.2; done
           openbox &
           sleep 1
-          ./gradlew :decorated-window-tao:taoHeadfulTest
+          ./gradlew :decorated-window-tao:taoHeadfulTest "-Pnucleus.prebuiltNativeArtifacts=true"
 
       - name: Run headful suite
         if: runner.os != 'Linux'
-        run: ./gradlew :decorated-window-tao:taoHeadfulTest
+        run: ./gradlew :decorated-window-tao:taoHeadfulTest "-Pnucleus.prebuiltNativeArtifacts=true"
 
       - name: Smoke standalone NSPanel chain (macOS)
         if: runner.os == 'macOS'
         # Ownerless NSPanel + Metal pipeline + reposition/orderFront/orderOut
         # cycle — the standalone-popup native chain has no other CI coverage.
-        run: ./gradlew :decorated-window-tao:smokeStandalonePanelMac
+        run: ./gradlew :decorated-window-tao:smokeStandalonePanelMac "-Pnucleus.prebuiltNativeArtifacts=true"
 
   # Native accessibility protocol: launches tao-demo on its A11y tab and
   # verifies the OS-level projection from the OUTSIDE, through the same client
@@ -347,7 +347,7 @@ jobs:
       # real cause of the empty UIA tree (idle-activation race) is fixed in
       # the a11y sync scheduler — see the job comment above.
       - name: Build tao-demo (so the probe timeout is not spent compiling)
-        run: ./gradlew :examples:tao-demo:jar
+        run: ./gradlew :examples:tao-demo:jar "-Pnucleus.prebuiltNativeArtifacts=true"
 
       - name: Install display + AT-SPI stack (Linux)
         if: runner.os == 'Linux'
@@ -370,7 +370,8 @@ jobs:
           dbus-send --session --dest=org.a11y.Bus --type=method_call --print-reply \
             /org/a11y/bus org.freedesktop.DBus.Properties.Set \
             string:org.a11y.Status string:IsEnabled variant:boolean:true
-          NUCLEUS_DEMO_TAB=A11y ./gradlew --no-daemon :examples:tao-demo:run > /tmp/tao-demo.log 2>&1 &
+          NUCLEUS_DEMO_TAB=A11y ./gradlew --no-daemon :examples:tao-demo:run \
+            "-Pnucleus.prebuiltNativeArtifacts=true" > /tmp/tao-demo.log 2>&1 &
           status=0
           # Ordered so the mutation-sensitive probe runs on a pristine tree:
           # verify-atspi.py asserts the exact 'click counter 1' transition.
@@ -394,7 +395,8 @@ jobs:
         shell: bash
         run: |
           NUCLEUS_DEMO_TAB=A11y NUCLEUS_A11Y_DEBUG=1 \
-            ./gradlew --no-daemon :examples:tao-demo:run > /tmp/tao-demo.log 2>&1 &
+            ./gradlew --no-daemon :examples:tao-demo:run \
+              "-Pnucleus.prebuiltNativeArtifacts=true" > /tmp/tao-demo.log 2>&1 &
           status=0
           pwsh -File scripts/ci/verify-uia.ps1 -Title "Tao Backend Demo" -TimeoutSec 300 || status=$?
           echo "── java processes ──"
@@ -409,7 +411,8 @@ jobs:
       - name: Verify AX projection (macOS, self-skips without TCC trust)
         if: runner.os == 'macOS'
         run: |
-          NUCLEUS_DEMO_TAB=A11y ./gradlew --no-daemon :examples:tao-demo:run > /tmp/tao-demo.log 2>&1 &
+          NUCLEUS_DEMO_TAB=A11y ./gradlew --no-daemon :examples:tao-demo:run \
+            "-Pnucleus.prebuiltNativeArtifacts=true" > /tmp/tao-demo.log 2>&1 &
           for i in $(seq 1 90); do
             APP_PID=$(pgrep -f dev.nucleusframework.sampletao.MainKt || true)
             [ -n "$APP_PID" ] && break

@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -11,11 +12,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.tao.DecoratedWindow
+import dev.nucleusframework.window.tao.MacTextureViewProducerInfo
+import dev.nucleusframework.window.tao.TextureViewHostCapabilities
+import dev.nucleusframework.window.tao.TextureViewHostDynamicRange
+import dev.nucleusframework.window.tao.TextureViewHostPixelFormat
+import dev.nucleusframework.window.tao.TextureViewHostPresentationState
 import dev.nucleusframework.window.tao.XdgPortalParent
+import dev.nucleusframework.window.tao.currentTextureViewHostCapabilities
 import dev.nucleusframework.window.tao.taoApplication
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlin.math.abs
 import kotlin.system.exitProcess
@@ -32,6 +41,8 @@ public object TaoHeadfulTestSuiteMain {
     // `-Dnucleus.tao.headful.filter=#418` to run one probe on its own.
     private val nameFilter: String? =
         System.getProperty("nucleus.tao.headful.filter")?.takeIf { it.isNotBlank() }
+
+    private val macTextureHostCapabilities = AtomicReference<TextureViewHostCapabilities?>()
 
     private val allCases: List<TaoWindowTestCase> =
         listOf(
@@ -284,6 +295,34 @@ public object TaoHeadfulTestSuiteMain {
                     open.close()
                 }
             },
+            TaoWindowTestCase(
+                name = "macOS extended TextureView host reports a presented EDR surface",
+                skip = { if (!isMac) "macOS only" else null },
+                dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE,
+                content = {
+                    val capabilities = currentTextureViewHostCapabilities()
+                    SideEffect { macTextureHostCapabilities.set(capabilities) }
+                },
+            ) {
+                awaitUntil("extended TextureView host presented its first frame") {
+                    macTextureHostCapabilities.get()?.presentationState ==
+                        TextureViewHostPresentationState.PRESENTED
+                }
+                val capabilities = checkNotNull(macTextureHostCapabilities.get())
+                check(capabilities.requestedMode == WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE)
+                check(capabilities.outputPixelFormat == TextureViewHostPixelFormat.RGBA16_FLOAT_SCRGB)
+                check(capabilities.generation > 0L)
+                check(capabilities.presentedFrameCount == 1L)
+                check(capabilities.sdrWhiteLevelNits == SRGB_REFERENCE_WHITE_NITS)
+                check((capabilities.maximumLuminanceNits ?: 0f) >= SRGB_REFERENCE_WHITE_NITS)
+                check(capabilities.headroom >= 1f)
+                check(
+                    (capabilities.actualDynamicRange == TextureViewHostDynamicRange.HDR) ==
+                        (capabilities.headroom > 1f),
+                )
+                val producer = capabilities.producerInfo as? MacTextureViewProducerInfo
+                check(producer != null && producer.device != 0L && producer.commandQueue != 0L)
+            },
             // macOS dialog-parent e2e (real AppKit sheet, not a pointer smoke
             // check): resolve the live NSWindow*, prove it is distinct from the
             // Compose NSView, then parent a real NSOpenPanel via
@@ -402,6 +441,7 @@ public object TaoHeadfulTestSuiteMain {
                         onCloseRequest = { /* cases drive their own lifecycle */ },
                         title = "tao-headful: ${case.name}",
                         transparent = case.transparent,
+                        dynamicRangeMode = case.dynamicRangeMode,
                     ) {
                         // Default chrome surface; cases may paint over it via
                         // [TaoWindowTestCase.content] (scaffold, backdrop, …).
@@ -529,4 +569,5 @@ public object TaoHeadfulTestSuiteMain {
     private const val RESIZE_TOLERANCE_PX = 64
     private const val RESTORE_TOLERANCE_PX = 32
     private const val MOVE_DELTA_DP = 60.0
+    private const val SRGB_REFERENCE_WHITE_NITS = 80f
 }

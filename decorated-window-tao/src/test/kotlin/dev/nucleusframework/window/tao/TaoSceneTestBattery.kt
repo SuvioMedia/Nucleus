@@ -8,6 +8,7 @@ import dev.nucleusframework.window.tao.event.TaoKeyMappingTest
 import dev.nucleusframework.window.tao.event.TaoKeyboardModifiersDecodeTest
 import dev.nucleusframework.window.tao.event.TaoSyntheticMouseWheelEventTest
 import dev.nucleusframework.window.tao.event.TaoWheelPinchZoomTest
+import dev.nucleusframework.window.tao.scene.TaoInteropTransactionTest
 import dev.nucleusframework.window.tao.scene.TaoSceneAnimationTest
 import dev.nucleusframework.window.tao.scene.TaoSceneKeyboardTest
 import dev.nucleusframework.window.tao.scene.TaoScenePointerTest
@@ -46,6 +47,40 @@ public object TaoSceneTestBattery {
                     t
                 }
             results += CaseResult(name, failure)
+        }
+
+        run("TextureViewStreamControllerTest: submittingNewFrameReleasesSkippedFrame") {
+            TextureViewStreamControllerTest().submittingNewFrameReleasesSkippedFrame()
+        }
+        run("TextureViewStreamControllerTest: acquiredFrameLivesUntilConsumerReleasesIt") {
+            TextureViewStreamControllerTest().acquiredFrameLivesUntilConsumerReleasesIt()
+        }
+        run("TextureViewStreamControllerTest: closingWithCurrentAcquiredFrameReleasesItExactlyOnce") {
+            TextureViewStreamControllerTest().closingWithCurrentAcquiredFrameReleasesItExactlyOnce()
+        }
+        run("TextureViewStreamControllerTest: replacedFrameCannotBeAcquiredAgain") {
+            TextureViewStreamControllerTest().replacedFrameCannotBeAcquiredAgain()
+        }
+        run("TextureViewStreamControllerTest: streamRejectsSecondConsumerAndFrameResubmission") {
+            TextureViewStreamControllerTest().streamRejectsSecondConsumerAndFrameResubmission()
+        }
+        run("TextureViewStreamControllerTest: extendedLinearMetadataKeepsReferenceWhiteSemantic") {
+            TextureViewStreamControllerTest().extendedLinearMetadataKeepsReferenceWhiteSemantic()
+        }
+        run("TextureViewStreamControllerTest: referenceWhiteScalePreservesExtendedLinearSceneUnits") {
+            TextureViewStreamControllerTest().referenceWhiteScalePreservesExtendedLinearSceneUnits()
+        }
+        run("TextureViewStreamControllerTest: referenceWhiteScaleIsIdentityForSrgbOrHostRelativeProducer") {
+            TextureViewStreamControllerTest().referenceWhiteScaleIsIdentityForSrgbOrHostRelativeProducer()
+        }
+        run("TextureViewStreamControllerTest: colorInfoRejectsUnpremultipliedAlphaUntilBackendsSupportIt") {
+            TextureViewStreamControllerTest().colorInfoRejectsUnpremultipliedAlphaUntilBackendsSupportIt()
+        }
+        run("TextureViewStreamControllerTest: hostGenerationChangesOnlyWithSurfaceConfiguration") {
+            TextureViewStreamControllerTest().hostGenerationChangesOnlyWithSurfaceConfiguration()
+        }
+        run("TextureViewStreamControllerTest: presentedFrameMarkerSaturatesAfterFirstPresent") {
+            TextureViewStreamControllerTest().presentedFrameMarkerSaturatesAfterFirstPresent()
         }
 
         run("TaoKeyMappingTest: mac layout-aware path maps produced characters over physical position") {
@@ -106,6 +141,9 @@ public object TaoSceneTestBattery {
             TaoWindowScrollTest().pixelScrollMirrorsMacOsAwtPreciseWheelRotationScale()
         }
         run("TaoWindowResizableTest: reflectsCreationFlag") { TaoWindowResizableTest().reflectsCreationFlag() }
+        run("TaoInteropTransactionTest: preparesComposeStateBeforeNativePresentationActions") {
+            TaoInteropTransactionTest().preparesComposeStateBeforeNativePresentationActions()
+        }
         run("TaoSceneRenderTest: solid background fills the whole frame") {
             TaoSceneRenderTest().`solid background fills the whole frame`()
         }

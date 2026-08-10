@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import dev.nucleusframework.window.tao.TaoCursorIcon
 import dev.nucleusframework.window.tao.TaoNativeViewHost
+import dev.nucleusframework.window.tao.dispatch.TaoMainDispatcher
 import dev.nucleusframework.window.tao.event.dispatchNativeKeyEvent
 import dev.nucleusframework.window.tao.event.toTaoCursorIconCode
 import dev.nucleusframework.window.tao.ffi.NativeMetalBridge
@@ -134,6 +135,7 @@ internal class NativeViewOverlayController(
             button: Int,
             modifiers: Int,
         ) {
+            val receivedAtNanos = if (TraceOverlayInput) System.nanoTime() else 0L
             val sc = scene ?: return
             val pointerButton =
                 when (button) {
@@ -153,6 +155,26 @@ internal class NativeViewOverlayController(
                 type = PointerType.Mouse,
                 button = pointerButton,
             )
+            if (eventType == PointerEventType.Press || eventType == PointerEventType.Release) {
+                // Overlay events arrive directly from AppKit's NSView rather than through Tao's
+                // Event::WindowEvent pipeline. Consequently there is no guaranteed
+                // MainEventsCleared callback immediately after mouseUp to resume Compose's
+                // clickable coroutine. Waiting for an unrelated Tao turn makes native-video
+                // controls feel sticky and can defer a click by hundreds of milliseconds.
+                // Drain the finite input continuation chain now, after sendPointerEvent has
+                // returned (so the scene is no longer inside pointer dispatch), and explicitly
+                // schedule the frame containing the pressed/clicked state.
+                TaoMainDispatcher.pump()
+                popupHost.requestRedraw()
+            }
+            if (TraceOverlayInput) {
+                val completedAtNanos = System.nanoTime()
+                println(
+                    "[NUCLEUS_TAO_OVERLAY_INPUT] type=$eventType receivedNs=$receivedAtNanos " +
+                        "completedNs=$completedAtNanos elapsedUs=" +
+                        ((completedAtNanos - receivedAtNanos) / NANOS_PER_MICROSECOND),
+                )
+            }
         }
 
         override fun onScroll(
@@ -215,6 +237,12 @@ internal class NativeViewOverlayController(
     private val regions: MutableMap<Any, IntArray> = LinkedHashMap()
     private var pendingContent: (@Composable () -> Unit)? = null
     private var firstBoundsApplied = false
+
+    // Read reflectively by KMediaPlayer's compatibility layer. Older Nucleus 2.2.0 artifacts
+    // update the overlay scene after recording and need the narrow viewport repair; this fork
+    // prepares it before recording and must not run that duplicate native resize path.
+    @Suppress("unused")
+    private val sceneViewportPreparedBeforeInteropPresentation: Boolean = true
 
     /**
      * Creates the overlay NSView and adds it as the topmost subview of
@@ -285,10 +313,10 @@ internal class NativeViewOverlayController(
         if (frameUnchanged) return
         val capturedHandle = overlayNsView
 
-        // Steady-state path: defer EVERYTHING (AppKit setFrame, Metal
-        // layer resize, ComposeScene size) into a single CATransaction
-        // committed by the host's interop scheduler. The three updates
-        // MUST land atomically because they read each other:
+        // Steady-state path: prepare the ComposeScene viewport before the matching frame is
+        // recorded, then defer AppKit setFrame + Metal layer resize into the CATransaction that
+        // presents that frame. Treating scene.size as a native presentation action is too late:
+        // the overlay picture has already been recorded with the previous viewport by then.
         //
         //   * `nativeResize` does `att->layer.frame = att->view.bounds`,
         //     so it has to run AFTER `nativeSetOverlayFrame` updated
@@ -297,9 +325,9 @@ internal class NativeViewOverlayController(
         //     drawable shows the new-size texture clipped/positioned
         //     inside the old-size layer rect. Visually: the overlay
         //     "lags" or flickers during a window live-resize.
-        //   * `scene.size` is the ComposeScene's own viewport for
-        //     popup clamping / hit-test bounds; doing it in the same
-        //     transaction keeps it in lock-step with the surface size.
+        //   * `scene.size` is the ComposeScene's viewport for layout, popup clamping and hit-test
+        //     bounds. The host's preparation queue applies it immediately before recording, while
+        //     the corresponding native resize is still committed with that recorded frame.
         //
         // The bookkeeping (`lastFrame*`, `widthPx`, `heightPx`, `overlayOffset*`)
         // updates synchronously so a follow-up `setBoundsInternal` call
@@ -310,6 +338,12 @@ internal class NativeViewOverlayController(
             val capturedAttachment = attachmentHandle
             val capturedScale = scale
             val capturedScene = scene
+            val sizeChanged = widthPxNew != widthPx || heightPxNew != heightPx
+            if (sizeChanged) {
+                host.scheduleInteropPreparation {
+                    capturedScene?.size = IntSize(widthPxNew, heightPxNew)
+                }
+            }
             host.scheduleInterop {
                 NativeTaoMacOsNativeViewBridge.nativeSetOverlayFrame(
                     capturedHandle,
@@ -325,9 +359,6 @@ internal class NativeViewOverlayController(
                         heightPxNew,
                         capturedScale,
                     )
-                }
-                if (widthPxNew != widthPx || heightPxNew != heightPx) {
-                    capturedScene?.size = IntSize(widthPxNew, heightPxNew)
                 }
             }
             lastFrameX = xPx
@@ -434,9 +465,11 @@ internal class NativeViewOverlayController(
     private val metalTextureHostCache = MetalTextureHostCache()
 
     private fun metalTextureHost(): TaoMetalTextureHost? =
-        metalTextureHostCache.get(attachmentHandle, directContext) { device, ctx ->
+        metalTextureHostCache.get(attachmentHandle, directContext) { device, commandQueue, nativeView, ctx ->
             object : TaoMetalTextureHost {
                 override val metalDevicePtr: Long = device
+                override val metalCommandQueuePtr: Long = commandQueue
+                override val nativeViewPtr: Long = nativeView
                 override val directContext: DirectContext = ctx
 
                 override fun <T> runOnRenderThread(block: () -> T): T = popupHost.runOnRenderThread(block)
@@ -534,6 +567,8 @@ internal class NativeViewOverlayController(
     }
 
     private companion object {
+        private const val NANOS_PER_MICROSECOND = 1_000L
+        private val TraceOverlayInput = java.lang.Boolean.getBoolean("nucleus.tao.traceOverlayInput")
         private val EmptyRegions = FloatArray(0)
     }
 }
