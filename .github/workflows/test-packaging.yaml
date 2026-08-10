@@ -80,7 +80,9 @@ jobs:
 
       - name: Build packages
         shell: bash
-        run: ./gradlew :examples:nucleus-demo:packageReleaseDistributionForCurrentOS --stacktrace --no-daemon
+        run: >-
+          ./gradlew :examples:nucleus-demo:packageReleaseDistributionForCurrentOS
+          --stacktrace --no-daemon -Pnucleus.prebuiltNativeArtifacts=true
 
       - name: Upload packaged artifacts
         if: always()

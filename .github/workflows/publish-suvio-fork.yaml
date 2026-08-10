@@ -98,7 +98,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
 
       - name: Run release checks
-        run: ./gradlew preMerge --continue
+        run: ./gradlew preMerge --continue -Pnucleus.prebuiltNativeArtifacts=true
 
       - name: Publish Maven repository
         env:
@@ -113,6 +113,7 @@ jobs:
             ./gradlew publishAllToMavenLocal \
               --no-configuration-cache \
               --no-daemon \
+              -Pnucleus.prebuiltNativeArtifacts=true \
               -Dmaven.repo.local="$repository"
 
           tao_jar="$repository/dev/nucleusframework/nucleus.decorated-window-tao/${NUCLEUS_VERSION}/nucleus.decorated-window-tao-${NUCLEUS_VERSION}.jar"

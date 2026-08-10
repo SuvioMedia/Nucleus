@@ -45,7 +45,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v5
 
       - name: Run Gradle tasks
-        run: ./gradlew preMerge --continue
+        run: ./gradlew preMerge --continue -Pnucleus.prebuiltNativeArtifacts=true
 
       - name: Publish on Plugin Portal
         run: ./gradlew --project-dir plugin-build setupPluginUploadFromEnvironment publishPlugins

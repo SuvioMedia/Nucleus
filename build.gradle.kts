@@ -16,6 +16,15 @@ plugins {
 }
 
 val nativeBuildTaskPrefix = "buildNative"
+// Artifact-consuming workflows opt out of local native compilation explicitly.
+// Do not replace their task conditions with the local host-only condition below.
+val usePrebuiltNativeArtifacts =
+    providers
+        .gradleProperty("nucleus.prebuiltNativeArtifacts")
+        .map {
+            it.toBooleanStrictOrNull()
+                ?: error("Gradle property nucleus.prebuiltNativeArtifacts must be true or false.")
+        }.getOrElse(false)
 
 val buildNative by tasks.registering {
     group = "build"
@@ -97,7 +106,7 @@ gradle.projectsEvaluated {
                     exclude("target/**", "vendor/**")
                 }
 
-            if (System.getenv("CI") != "true") {
+            if (System.getenv("CI") != "true" && !usePrebuiltNativeArtifacts) {
                 enabled = isHostTask
                 setOnlyIf("native build task matches the current host OS") {
                     isHostTask
