@@ -73,7 +73,11 @@ internal object MacTitleBarHeadfulCases {
                 val yFixed = (bar.center.y * POINTER_FIXED_SCALE).toInt()
                 val clickGapMillis =
                     (
-                        NativeMetalBridge.nativeDoubleClickIntervalMillis() * 3L / 4L -
+                        // Leave enough headroom for the slower GraalVM native-image
+                        // event pump. The injected presses still exercise the real
+                        // system-configured double-click path, but scheduling jitter
+                        // must not push the second press past AppKit's deadline.
+                        NativeMetalBridge.nativeDoubleClickIntervalMillis() / 4L -
                             INPUT_DISPATCH_SETTLE_MILLIS
                     ).coerceAtLeast(1L)
 
