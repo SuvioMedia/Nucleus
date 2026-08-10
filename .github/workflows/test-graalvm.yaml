@@ -54,7 +54,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-
           ./gradlew :examples:tao-native-test:packageGraalvmNative
-          -PnativeMarch=compatibility -Pnucleus.prebuiltNativeArtifacts=true
+          -PnativeMarch=compatibility "-Pnucleus.prebuiltNativeArtifacts=true"
           --no-daemon --stacktrace
 
       - name: Install display stack (Linux)
@@ -102,7 +102,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: >-
           ./gradlew :examples:nucleus-demo:packageGraalvmNative
-          -PnativeMarch=compatibility -Pnucleus.prebuiltNativeArtifacts=true
+          -PnativeMarch=compatibility "-Pnucleus.prebuiltNativeArtifacts=true"
           --no-daemon --stacktrace
 
       - name: Upload GraalVM artifacts

@@ -113,7 +113,7 @@ jobs:
         shell: bash
         run: >-
           ./gradlew :examples:nucleus-demo:packageReleaseDistributionForCurrentOS
-          --stacktrace --no-daemon -Pnucleus.prebuiltNativeArtifacts=true
+          --stacktrace --no-daemon "-Pnucleus.prebuiltNativeArtifacts=true"
 
       - name: Create sandboxed app ZIP (macOS only)
         if: runner.os == 'macOS'

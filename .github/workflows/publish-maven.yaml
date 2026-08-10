@@ -194,11 +194,11 @@ jobs:
           curl -s https://api64.ipify.org; echo
 
       - name: Run pre-merge checks
-        run: ./gradlew preMerge --continue -Pnucleus.prebuiltNativeArtifacts=true
+        run: ./gradlew preMerge --continue "-Pnucleus.prebuiltNativeArtifacts=true"
 
       - name: Publish to Maven Central
         if: success()
-        run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache -Pnucleus.prebuiltNativeArtifacts=true
+        run: ./gradlew publishAndReleaseToMavenCentral --no-configuration-cache "-Pnucleus.prebuiltNativeArtifacts=true"
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVENCENTRALUSERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVENCENTRALPASSWORD }}
