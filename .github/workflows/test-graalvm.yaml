@@ -52,7 +52,10 @@ jobs:
       - name: Build native test runner
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: ./gradlew :examples:tao-native-test:packageGraalvmNative -PnativeMarch=compatibility --no-daemon --stacktrace
+        run: >-
+          ./gradlew :examples:tao-native-test:packageGraalvmNative
+          -PnativeMarch=compatibility "-Pnucleus.prebuiltNativeArtifacts=true"
+          --no-daemon --stacktrace
 
       - name: Install display stack (Linux)
         if: runner.os == 'Linux'
@@ -97,7 +100,10 @@ jobs:
         # so the 60/hour anonymous limit is routinely exhausted — authenticate the call.
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: ./gradlew :examples:nucleus-demo:packageGraalvmNative -PnativeMarch=compatibility --no-daemon --stacktrace
+        run: >-
+          ./gradlew :examples:nucleus-demo:packageGraalvmNative
+          -PnativeMarch=compatibility "-Pnucleus.prebuiltNativeArtifacts=true"
+          --no-daemon --stacktrace
 
       - name: Upload GraalVM artifacts
         if: always()

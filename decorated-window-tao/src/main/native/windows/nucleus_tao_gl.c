@@ -46,6 +46,8 @@
 #include <EGL/eglext.h>
 #include <EGL/eglext_angle.h>
 
+#include "nucleus_tao_hdr_scene.h"
+
 /* /NODEFAULTLIB support */
 int _fltused = 0;
 
@@ -164,6 +166,14 @@ typedef struct {
     EGLSurface eglSurface;
     EGLContext eglContext;
     EGLConfig  eglConfig;
+    /* The regular ANGLE window context stays alive as the root of the GL
+     * share group used by TextureView imports and native overlay surfaces.
+     * In extended mode the active trio above points at the FP16 pbuffer while
+     * this base trio continues to be published through the host registry. */
+    EGLSurface baseEglSurface;
+    EGLContext baseEglContext;
+    EGLConfig  baseEglConfig;
+    NucleusHdrScene *hdrScene;
     int   widthPx;
     int   heightPx;
     float scale;
@@ -417,7 +427,7 @@ static EGLDisplay angleD3D11Display(EGLint deviceType) {
     return pEglGetPlatformDisplayEXT(EGL_PLATFORM_ANGLE_ANGLE, EGL_DEFAULT_DISPLAY, attribs);
 }
 
-static GlAttachment *attachEgl(HWND hwnd) {
+static GlAttachment *attachEgl(HWND hwnd, BOOL extendedDynamicRange) {
     loadEgl();
     if (!eglAvailable || !pEglGetPlatformDisplayEXT) return NULL;
 
@@ -508,9 +518,34 @@ static GlAttachment *attachEgl(HWND hwnd) {
     att->eglSurface = surface;
     att->eglContext = ctx;
     att->eglConfig = config;
+    att->baseEglSurface = surface;
+    att->baseEglContext = ctx;
+    att->baseEglConfig = config;
     att->scale = 1.0f;
 
-    registerHostEgl(hwnd, dpy, ctx, config);
+    if (extendedDynamicRange) {
+        RECT client;
+        memset(&client, 0, sizeof(client));
+        if (!GetClientRect(hwnd, &client)) { client.right = 1; client.bottom = 1; }
+        int widthPx = (int)(client.right - client.left); if (widthPx < 1) widthPx = 1;
+        int heightPx = (int)(client.bottom - client.top); if (heightPx < 1) heightPx = 1;
+        att->hdrScene = nucleus_tao_hdr_scene_create(hwnd, dpy, ctx, widthPx, heightPx);
+        if (att->hdrScene) {
+            att->eglSurface = (EGLSurface)nucleus_tao_hdr_scene_egl_surface(att->hdrScene);
+            att->eglContext = (EGLContext)nucleus_tao_hdr_scene_egl_context(att->hdrScene);
+            att->eglConfig = (EGLConfig)nucleus_tao_hdr_scene_egl_config(att->hdrScene);
+            att->widthPx = widthPx;
+            att->heightPx = heightPx;
+            ShowWindow(surfaceHwnd, SW_HIDE);
+        }
+    }
+
+    /* Publish the context that actually renders the Compose scene. In HDR mode
+     * [hdrScene] replaces the base RGBA8 context with a shared FP16 context.
+     * TextureView imports run in the middle of Skia's render pass and restore
+     * this registered binding afterwards; restoring the base context here
+     * would leave Skia's DirectContext current against the wrong GL context. */
+    registerHostEgl(hwnd, att->eglDisplay, att->eglContext, att->eglConfig);
     return att;
 }
 
@@ -527,7 +562,17 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeAttach(
     (void)env; (void)clazz;
     HWND hwnd = (HWND)(uintptr_t)hwndLong;
     if (!hwnd || !IsWindow(hwnd)) return 0;
-    return (jlong)(uintptr_t)attachEgl(hwnd);
+    return (jlong)(uintptr_t)attachEgl(hwnd, FALSE);
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeAttachWithDynamicRange(
+    JNIEnv *env, jclass clazz, jlong hwndLong, jboolean extendedDynamicRange)
+{
+    (void)env; (void)clazz;
+    HWND hwnd = (HWND)(uintptr_t)hwndLong;
+    if (!hwnd || !IsWindow(hwnd)) return 0;
+    return (jlong)(uintptr_t)attachEgl(hwnd, extendedDynamicRange ? TRUE : FALSE);
 }
 
 /* Address of the GrGLGetProc trampoline for ANGLE (see nucleus_tao_egl_get_proc).
@@ -552,8 +597,9 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeDetach(
     /* The EGLDisplay is process-wide (shared with overlays); never
      * eglTerminate it here — just drop this window's context + surface. */
     pEglMakeCurrent(att->eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-    pEglDestroyContext(att->eglDisplay, att->eglContext);
-    pEglDestroySurface(att->eglDisplay, att->eglSurface);
+    if (att->hdrScene) nucleus_tao_hdr_scene_destroy(att->hdrScene);
+    pEglDestroyContext(att->eglDisplay, att->baseEglContext);
+    pEglDestroySurface(att->eglDisplay, att->baseEglSurface);
     if (IsWindow(att->surfaceHwnd)) DestroyWindow(att->surfaceHwnd);
     HeapFree(GetProcessHeap(), 0, att);
     /* Unregister after freeing att: recompute the global trio to a
@@ -570,7 +616,11 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeMakeCurrent(
     (void)env; (void)clazz;
     GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
     if (!att) return;
-    pEglMakeCurrent(att->eglDisplay, att->eglSurface, att->eglSurface, att->eglContext);
+    if (att->hdrScene) {
+        nucleus_tao_hdr_scene_make_current(att->hdrScene);
+    } else {
+        pEglMakeCurrent(att->eglDisplay, att->eglSurface, att->eglSurface, att->eglContext);
+    }
 }
 
 JNIEXPORT void JNICALL
@@ -586,13 +636,21 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeResize(
     /* Keep the render-surface child glued to the client area. Runs in the
      * same event-dispatch turn as the parent's WM_SIZE (before the next
      * render), so the surface never lags the window visually. */
-    if (att->surfaceHwnd != att->hwnd && IsWindow(att->surfaceHwnd)) {
+    if (!att->hdrScene && att->surfaceHwnd != att->hwnd && IsWindow(att->surfaceHwnd)) {
         SetWindowPos(att->surfaceHwnd, NULL, 0, 0, att->widthPx, att->heightPx,
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_DEFERERASE);
     }
     /* The ANGLE window surface tracks the HWND size automatically; the
      * explicit viewport keeps Skia surface creation in step. */
-    pEglMakeCurrent(att->eglDisplay, att->eglSurface, att->eglSurface, att->eglContext);
+    if (att->hdrScene) {
+        if (nucleus_tao_hdr_scene_resize(att->hdrScene, att->widthPx, att->heightPx)) {
+            att->eglSurface = (EGLSurface)nucleus_tao_hdr_scene_egl_surface(att->hdrScene);
+            att->eglContext = (EGLContext)nucleus_tao_hdr_scene_egl_context(att->hdrScene);
+            att->eglConfig = (EGLConfig)nucleus_tao_hdr_scene_egl_config(att->hdrScene);
+        }
+    } else {
+        pEglMakeCurrent(att->eglDisplay, att->eglSurface, att->eglSurface, att->eglContext);
+    }
     if (pglViewport) pglViewport(0, 0, att->widthPx, att->heightPx);
 }
 
@@ -610,7 +668,11 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeClearPresent(
     (void)env; (void)clazz;
     GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
     if (!att || !pglClearColor || !pglClear) return;
-    pEglMakeCurrent(att->eglDisplay, att->eglSurface, att->eglSurface, att->eglContext);
+    if (att->hdrScene) {
+        nucleus_tao_hdr_scene_make_current(att->hdrScene);
+    } else {
+        pEglMakeCurrent(att->eglDisplay, att->eglSurface, att->eglSurface, att->eglContext);
+    }
     /* Skia can leave scissoring enabled; glClear honours it. */
     if (pglDisable) pglDisable(NUCLEUS_GL_SCISSOR_TEST);
     float a = (float)((argb >> 24) & 0xFF) / 255.0f;
@@ -619,23 +681,30 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeClearPresent(
     float b = (float)( argb        & 0xFF) / 255.0f;
     pglClearColor(r, g, b, a);
     pglClear(NUCLEUS_GL_COLOR_BUFFER_BIT);
-    pEglSwapBuffers(att->eglDisplay, att->eglSurface);
+    if (att->hdrScene) {
+        nucleus_tao_hdr_scene_present(att->hdrScene);
+    } else {
+        pEglSwapBuffers(att->eglDisplay, att->eglSurface);
+    }
 }
 
-JNIEXPORT void JNICALL
+JNIEXPORT jboolean JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativePresent(
     JNIEnv *env, jclass clazz, jlong handle)
 {
     (void)env; (void)clazz;
     GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
-    if (!att) return;
+    if (!att) return JNI_FALSE;
     /* Defensive re-make-current: an overlay/popup renderer may have left
      * its d3d-texture pbuffer bound on this thread (single shared
      * EGLContext, see overlay_dcomp.cpp). eglSwapBuffers requires the
      * surface to be current; re-binding when already current is an ANGLE
      * fast-path no-op. */
+    if (att->hdrScene) {
+        return nucleus_tao_hdr_scene_present(att->hdrScene) ? JNI_TRUE : JNI_FALSE;
+    }
     pEglMakeCurrent(att->eglDisplay, att->eglSurface, att->eglSurface, att->eglContext);
-    pEglSwapBuffers(att->eglDisplay, att->eglSurface);
+    return pEglSwapBuffers(att->eglDisplay, att->eglSurface) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
@@ -651,8 +720,85 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeSetVSyncEnabled
      * refresh (default — keeps animations aligned to VBlank); interval 0 =
      * present immediately, set for the duration of the OS modal resize/move
      * loop so border-drag frames don't block on VBlank. */
-    pEglMakeCurrent(att->eglDisplay, att->eglSurface, att->eglSurface, att->eglContext);
-    pEglSwapInterval(att->eglDisplay, enabled ? 1 : 0);
+    if (att->hdrScene) {
+        nucleus_tao_hdr_scene_set_vsync_enabled(att->hdrScene, enabled ? TRUE : FALSE);
+    } else {
+        pEglMakeCurrent(att->eglDisplay, att->eglSurface, att->eglSurface, att->eglContext);
+        pEglSwapInterval(att->eglDisplay, enabled ? 1 : 0);
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeUsesExtendedScene(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
+    return att && att->hdrScene ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeIsHdrOutput(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
+    return att && att->hdrScene && nucleus_tao_hdr_scene_is_hdr_output(att->hdrScene)
+        ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeSdrWhiteLevelNits(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
+    return att && att->hdrScene ? nucleus_tao_hdr_scene_sdr_white_nits(att->hdrScene) : 80.0f;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeMaximumLuminanceNits(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
+    return att && att->hdrScene ? nucleus_tao_hdr_scene_max_luminance_nits(att->hdrScene) : 80.0f;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeHeadroom(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
+    return att && att->hdrScene ? nucleus_tao_hdr_scene_headroom(att->hdrScene) : 1.0f;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeOutputGeneration(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
+    return att && att->hdrScene ? (jlong)nucleus_tao_hdr_scene_generation(att->hdrScene) : 0;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativePresentedFrameCount(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
+    return att && att->hdrScene ? (jlong)nucleus_tao_hdr_scene_presented_frames(att->hdrScene) : 0;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoGlBridge_nativeAdapterLuid(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    GlAttachment *att = (GlAttachment *)(uintptr_t)handle;
+    return att && att->hdrScene ? (jlong)nucleus_tao_hdr_scene_adapter_luid(att->hdrScene) : 0;
 }
 
 JNIEXPORT jint JNICALL

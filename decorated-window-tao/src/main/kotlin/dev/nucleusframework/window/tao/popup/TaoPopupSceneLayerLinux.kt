@@ -110,6 +110,8 @@ internal class TaoPopupSceneLayerLinux(
 
     /** EGL attachment ready — flips on WINDOW_READY once the GPU side is up. */
     private var attachment: Long = 0
+    private var extendedSceneActive: Boolean = false
+    private var sceneFramebufferId: Int = 0
     private var directContext: DirectContext? = null
     private var shown = false
 
@@ -246,6 +248,8 @@ internal class TaoPopupSceneLayerLinux(
                         h,
                         bufferScale,
                         0,
+                        host.dynamicRangeMode ==
+                            dev.nucleusframework.window.WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE,
                     )
                 else -> 0L
             }
@@ -261,9 +265,12 @@ internal class TaoPopupSceneLayerLinux(
             return
         }
         attachment = handle
+        extendedSceneActive = NativeTaoEglBridge.nativeUsesExtendedScene(handle)
+        sceneFramebufferId = NativeTaoEglBridge.nativeFramebufferId(handle)
         directContext = ctx
         glTextureHostState.value =
             object : TaoGlTextureHost {
+                override val textureViewHostCapabilities = host.textureViewHostCapabilities
                 override val directContext: DirectContext = ctx
 
                 // Read live: 0 once the layer closed, so a late disposal can't
@@ -347,6 +354,7 @@ internal class TaoPopupSceneLayerLinux(
                 directContext = null
                 NativeTaoEglBridge.nativeDetach(attachment)
                 attachment = 0
+                sceneFramebufferId = 0
             }
         }
         popupWindow.requestClose()
@@ -427,7 +435,9 @@ internal class TaoPopupSceneLayerLinux(
             widthPx = w
             heightPx = h
             if (attachment != 0L) {
-                NativeTaoEglBridge.nativeResize(attachment, w, h, scale)
+                withEglContextCurrent(attachment) {
+                    NativeTaoEglBridge.nativeResize(attachment, w, h, scale)
+                }
             }
         }
         if (!shown) {
@@ -451,13 +461,17 @@ internal class TaoPopupSceneLayerLinux(
         // frame is real; nothing is on screen yet anyway.
         val frame = _bounds
         NativeTaoEglBridge.nativeMakeCurrent(attachment)
-        // Private EGL context — no resetGLAll needed (unlike the Windows
-        // shared-process-context path).
+        ctx.resetGLAll()
+        // The PQ final pass changes framebuffer/program bindings between
+        // frames, so invalidate Skia's cached GL state after rebinding.
         renderGlFrame(
             widthPx = widthPx,
             heightPx = heightPx,
             directContext = ctx,
             clearColorArgb = 0x00000000,
+            extendedDynamicRange = extendedSceneActive,
+            framebufferId = sceneFramebufferId,
+            afterFlush = { glTextureHostState.value?.publishTextureReleaseFences() },
             present = {
                 if (frame != IntRect.Zero) NativeTaoEglBridge.nativePresent(attachment)
             },

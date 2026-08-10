@@ -21,6 +21,13 @@ package dev.nucleusframework.window.tao.scene
 internal typealias TaoInteropAction = () -> Unit
 
 internal interface TaoInteropTransaction {
+    /**
+     * Compose-scene mutations that must be visible while the frame associated with this
+     * transaction is recorded. Native AppKit mutations remain in [actions] and are committed
+     * later, atomically with presentation.
+     */
+    val preparations: List<TaoInteropAction>
+
     val actions: List<TaoInteropAction>
 
     /**
@@ -32,6 +39,10 @@ internal interface TaoInteropTransaction {
      */
     val isInteropActive: Boolean
 
+    fun prepare() {
+        for (preparation in preparations) preparation()
+    }
+
     fun performTransaction() {
         for (action in actions) action()
     }
@@ -40,8 +51,14 @@ internal interface TaoInteropTransaction {
 internal class MutableTaoInteropTransaction(
     override var isInteropActive: Boolean,
 ) : TaoInteropTransaction {
+    private val _preparations = ArrayList<TaoInteropAction>()
+    override val preparations: List<TaoInteropAction> get() = _preparations
     private val _actions = ArrayList<TaoInteropAction>()
     override val actions: List<TaoInteropAction> get() = _actions
+
+    fun addPreparation(action: TaoInteropAction) {
+        _preparations.add(action)
+    }
 
     fun add(action: TaoInteropAction) {
         _actions.add(action)

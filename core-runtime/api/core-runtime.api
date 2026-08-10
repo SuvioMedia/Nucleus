@@ -88,6 +88,7 @@ public final class dev/nucleusframework/core/runtime/LinuxDesktopEnvironment$Com
 public final class dev/nucleusframework/core/runtime/NativeLibraryLoader {
 	public static final field INSTANCE Ldev/nucleusframework/core/runtime/NativeLibraryLoader;
 	public final fun load (Ljava/lang/String;Ljava/lang/Class;Ljava/lang/String;Ljava/util/List;)Z
+	public final fun load (Ljava/lang/String;Ljava/lang/Class;Ljava/lang/String;Ljava/util/List;Z)Z
 	public static synthetic fun load$default (Ldev/nucleusframework/core/runtime/NativeLibraryLoader;Ljava/lang/String;Ljava/lang/Class;Ljava/lang/String;Ljava/util/List;ILjava/lang/Object;)Z
 }
 
