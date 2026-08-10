@@ -1,3 +1,5 @@
+@file:Suppress("TooManyFunctions")
+
 package dev.nucleusframework.window.tao
 
 import androidx.compose.foundation.layout.Box
@@ -15,11 +17,11 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.skiaCanvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.IntSize
+import org.jetbrains.skia.ColorFilter
+import org.jetbrains.skia.ColorMatrix
 import org.jetbrains.skia.FilterMipmap
 import org.jetbrains.skia.FilterMode
 import org.jetbrains.skia.Image
-import org.jetbrains.skia.ColorFilter
-import org.jetbrains.skia.ColorMatrix
 import org.jetbrains.skia.MipmapMode
 import org.jetbrains.skia.Paint
 import org.jetbrains.skia.Rect
@@ -59,10 +61,12 @@ public enum class TextureColorEncoding {
  */
 public data class TextureColorInfo(
     public val encoding: TextureColorEncoding,
+    /** All current TextureView backends require producer pixels to be premultiplied. */
     public val premultipliedAlpha: Boolean = true,
     public val sdrWhiteLevelNits: Float? = null,
 ) {
     init {
+        require(premultipliedAlpha) { "TextureView supports premultiplied alpha only" }
         require(sdrWhiteLevelNits == null || (sdrWhiteLevelNits.isFinite() && sdrWhiteLevelNits > 0f)) {
             "sdrWhiteLevelNits must be finite and positive"
         }
@@ -323,8 +327,7 @@ public fun nucleusDmaBufTextureSource(
     offset: Int = 0,
     modifier: Long = NucleusDrmFormat.MODIFIER_INVALID,
     colorInfo: TextureColorInfo,
-): TextureViewSource =
-    DmaBufTextureSource(fd, widthPx, heightPx, stride, fourcc, offset, modifier, colorInfo)
+): TextureViewSource = DmaBufTextureSource(fd, widthPx, heightPx, stride, fourcc, offset, modifier, colorInfo)
 
 internal data class DmaBufTextureSource(
     val fd: Int,
@@ -746,10 +749,26 @@ internal fun rememberExternalTextureColorPaint(colorInfo: TextureColorInfo): Pai
                 val filter =
                     ColorFilter.makeMatrix(
                         ColorMatrix(
-                            scale, 0f, 0f, 0f, 0f,
-                            0f, scale, 0f, 0f, 0f,
-                            0f, 0f, scale, 0f, 0f,
-                            0f, 0f, 0f, 1f, 0f,
+                            scale,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            scale,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            scale,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            0f,
+                            1f,
+                            0f,
                         ),
                     )
                 ExternalTextureColorPaint(Paint().apply { colorFilter = filter }, filter)

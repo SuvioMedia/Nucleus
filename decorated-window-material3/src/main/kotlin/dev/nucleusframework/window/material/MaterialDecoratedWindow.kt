@@ -132,10 +132,11 @@ fun NucleusApplicationScope.MaterialDecoratedWindow(
 /** Deprecated binary-compatible forwarding overload retained for one fork release. */
 @Deprecated(
     message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
-    replaceWith = ReplaceWith(
-        "MaterialDecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
-            "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
-    ),
+    replaceWith =
+        ReplaceWith(
+            "MaterialDecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
 )
 @Suppress("FunctionNaming", "LongParameterList")
 @Composable
@@ -189,10 +190,11 @@ fun NucleusApplicationScope.MaterialDecoratedWindow(
 /** Compatibility overload retained for one fork release. */
 @Deprecated(
     message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
-    replaceWith = ReplaceWith(
-        "MaterialDecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
-            "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
-    ),
+    replaceWith =
+        ReplaceWith(
+            "MaterialDecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
 )
 @Suppress("FunctionNaming", "LongParameterList")
 @Composable

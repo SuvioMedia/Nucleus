@@ -231,7 +231,8 @@ internal class TaoPopupSceneLayerLinux(
                         h,
                         scale.roundToInt().coerceAtLeast(1),
                         0,
-                        host.dynamicRangeMode == dev.nucleusframework.window.WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE,
+                        host.dynamicRangeMode ==
+                            dev.nucleusframework.window.WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE,
                     )
                 else -> 0L
             }

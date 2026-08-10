@@ -335,6 +335,10 @@ typedef struct {
 
 #define HANDLE_OF(ptr) ((NucleusTaoMetalAttachment *)(uintptr_t)(ptr))
 
+// Extended-linear sRGB uses the nominal sRGB reference white. EDR headroom is
+// relative to this value; NSScreen exposes the ratio, not an absolute nit value.
+#define NUCLEUS_SRGB_REFERENCE_WHITE_NITS 80.0f
+
 /* Refreshes the EDR facts that belong to the view's current NSScreen. This is
  * deliberately called by Kotlin on the AppKit thread before submitting a
  * frame; querying NSScreen from the Metal render thread would require a
@@ -344,7 +348,7 @@ static void refreshOutputCapabilities(NucleusTaoMetalAttachment *att) {
     NSScreen *screen = att->view.window.screen ?: [NSScreen mainScreen];
     NSInteger screenNumber = 0;
     float headroom = 1.0f;
-    float maximumNits = 100.0f;
+    float maximumNits = NUCLEUS_SRGB_REFERENCE_WHITE_NITS;
     if (screen != nil) {
         NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
         if (number != nil) screenNumber = number.integerValue;
@@ -352,7 +356,7 @@ static void refreshOutputCapabilities(NucleusTaoMetalAttachment *att) {
             CGFloat current = screen.maximumExtendedDynamicRangeColorComponentValue;
             CGFloat potential = screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
             headroom = (float)MAX(1.0, current);
-            maximumNits = 100.0f * (float)MAX(1.0, potential);
+            maximumNits = NUCLEUS_SRGB_REFERENCE_WHITE_NITS * (float)MAX(1.0, potential);
         }
     }
     if (att->screen_number != screenNumber || att->output_headroom != headroom ||
@@ -1250,7 +1254,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
     att->view   = view;
     att->extended_dynamic_range = useExtendedDynamicRange;
     att->output_headroom = 1.0f;
-    att->output_maximum_nits = 100.0f;
+    att->output_maximum_nits = NUCLEUS_SRGB_REFERENCE_WHITE_NITS;
     atomic_store(&att->output_generation, 1);
     atomic_store(&att->presented_frames, 0);
 
@@ -2153,14 +2157,16 @@ JNIEXPORT jfloat JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeSdrWhiteLevelNits(
         JNIEnv *env, jclass clazz, jlong handle) {
     (void) env; (void) clazz; (void) handle;
-    return 100.0f;
+    return NUCLEUS_SRGB_REFERENCE_WHITE_NITS;
 }
 
 JNIEXPORT jfloat JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeMaximumLuminanceNits(
         JNIEnv *env, jclass clazz, jlong handle) {
     (void) env; (void) clazz;
-    return handle == 0 ? 100.0f : HANDLE_OF(handle)->output_maximum_nits;
+    return handle == 0
+        ? NUCLEUS_SRGB_REFERENCE_WHITE_NITS
+        : HANDLE_OF(handle)->output_maximum_nits;
 }
 
 JNIEXPORT jfloat JNICALL

@@ -3,6 +3,7 @@ package dev.nucleusframework.window.tao
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class TextureViewStreamControllerTest {
@@ -63,6 +64,24 @@ class TextureViewStreamControllerTest {
     }
 
     @Test
+    fun replacedFrameCannotBeAcquiredAgain() {
+        val stream = TextureViewStreamController()
+        val token = Any()
+        val first = frame(1) {}
+        val second = frame(2) {}
+
+        stream.attachConsumer(token)
+        stream.submitFrame(first)
+        assertTrue(stream.acquireFrame(token, first))
+        stream.submitFrame(second)
+
+        assertFalse(stream.acquireFrame(token, first))
+        stream.releaseFrame(first)
+        stream.detachConsumer(token)
+        stream.close()
+    }
+
+    @Test
     fun streamRejectsSecondConsumerAndFrameResubmission() {
         val stream = TextureViewStreamController()
         val firstToken = Any()
@@ -115,6 +134,40 @@ class TextureViewStreamControllerTest {
             1f,
             textureReferenceWhiteScale(TextureColorInfo.EXTENDED_LINEAR_SRGB_PREMULTIPLIED, 80f),
         )
+    }
+
+    @Test
+    fun colorInfoRejectsUnpremultipliedAlphaUntilBackendsSupportIt() {
+        assertFailsWith<IllegalArgumentException> {
+            TextureColorInfo(
+                encoding = TextureColorEncoding.SRGB,
+                premultipliedAlpha = false,
+            )
+        }
+    }
+
+    @Test
+    fun hostGenerationChangesOnlyWithSurfaceConfiguration() {
+        val tracker = TextureViewHostGenerationTracker()
+
+        val first = tracker.resolve(surfaceToken = 10L, nativeGeneration = 1L)
+        assertEquals(first, tracker.resolve(surfaceToken = 10L, nativeGeneration = 1L))
+
+        val reconfigured = tracker.resolve(surfaceToken = 10L, nativeGeneration = 2L)
+        assertTrue(reconfigured > first)
+
+        val replacement = tracker.resolve(surfaceToken = 20L, nativeGeneration = 1L)
+        assertTrue(replacement > reconfigured)
+
+        tracker.reset()
+        assertTrue(tracker.resolve(surfaceToken = 20L, nativeGeneration = 1L) > replacement)
+    }
+
+    @Test
+    fun presentedFrameMarkerSaturatesAfterFirstPresent() {
+        assertEquals(0L, textureViewPresentedFrameMarker(0L))
+        assertEquals(1L, textureViewPresentedFrameMarker(1L))
+        assertEquals(1L, textureViewPresentedFrameMarker(10_000L))
     }
 
     private fun frame(

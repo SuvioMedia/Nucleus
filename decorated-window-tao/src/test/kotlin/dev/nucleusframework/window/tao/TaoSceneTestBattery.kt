@@ -58,6 +58,9 @@ public object TaoSceneTestBattery {
         run("TextureViewStreamControllerTest: closingWithCurrentAcquiredFrameReleasesItExactlyOnce") {
             TextureViewStreamControllerTest().closingWithCurrentAcquiredFrameReleasesItExactlyOnce()
         }
+        run("TextureViewStreamControllerTest: replacedFrameCannotBeAcquiredAgain") {
+            TextureViewStreamControllerTest().replacedFrameCannotBeAcquiredAgain()
+        }
         run("TextureViewStreamControllerTest: streamRejectsSecondConsumerAndFrameResubmission") {
             TextureViewStreamControllerTest().streamRejectsSecondConsumerAndFrameResubmission()
         }
@@ -69,6 +72,15 @@ public object TaoSceneTestBattery {
         }
         run("TextureViewStreamControllerTest: referenceWhiteScaleIsIdentityForSrgbOrHostRelativeProducer") {
             TextureViewStreamControllerTest().referenceWhiteScaleIsIdentityForSrgbOrHostRelativeProducer()
+        }
+        run("TextureViewStreamControllerTest: colorInfoRejectsUnpremultipliedAlphaUntilBackendsSupportIt") {
+            TextureViewStreamControllerTest().colorInfoRejectsUnpremultipliedAlphaUntilBackendsSupportIt()
+        }
+        run("TextureViewStreamControllerTest: hostGenerationChangesOnlyWithSurfaceConfiguration") {
+            TextureViewStreamControllerTest().hostGenerationChangesOnlyWithSurfaceConfiguration()
+        }
+        run("TextureViewStreamControllerTest: presentedFrameMarkerSaturatesAfterFirstPresent") {
+            TextureViewStreamControllerTest().presentedFrameMarkerSaturatesAfterFirstPresent()
         }
 
         run("TaoKeyMappingTest: mac layout-aware path maps produced characters over physical position") {

@@ -108,10 +108,11 @@ public fun ApplicationScope.DecoratedWindow(
 /** Deprecated binary-compatible forwarding overload retained for one fork release. */
 @Deprecated(
     message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
-    replaceWith = ReplaceWith(
-        "DecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
-            "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
-    ),
+    replaceWith =
+        ReplaceWith(
+            "DecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
 )
 @Suppress("LongParameterList", "FunctionNaming")
 @Composable
@@ -175,10 +176,11 @@ public fun ApplicationScope.DecoratedWindow(
 /** Compatibility overload retained for one fork release. Prefer [WindowDynamicRangeMode]. */
 @Deprecated(
     message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
-    replaceWith = ReplaceWith(
-        "DecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
-            "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
-    ),
+    replaceWith =
+        ReplaceWith(
+            "DecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
 )
 @Suppress("LongParameterList", "FunctionNaming", "LongMethod", "CyclomaticComplexMethod")
 @Composable

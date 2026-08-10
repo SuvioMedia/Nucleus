@@ -34,8 +34,9 @@ import dev.nucleusframework.window.tao.TaoTouchEvent
 import dev.nucleusframework.window.tao.TaoWindow
 import dev.nucleusframework.window.tao.TextureViewHostCapabilities
 import dev.nucleusframework.window.tao.TextureViewHostDynamicRange
-import dev.nucleusframework.window.tao.TextureViewHostPresentationState
+import dev.nucleusframework.window.tao.TextureViewHostGenerationTracker
 import dev.nucleusframework.window.tao.TextureViewHostPixelFormat
+import dev.nucleusframework.window.tao.TextureViewHostPresentationState
 import dev.nucleusframework.window.tao.WindowsTextureViewProducerInfo
 import dev.nucleusframework.window.tao.event.ProvideTaoWindowsScrollConfig
 import dev.nucleusframework.window.tao.event.TaoSyntheticMouseWheelEvent
@@ -49,6 +50,7 @@ import dev.nucleusframework.window.tao.ffi.NativeTaoWindowsDecoBridge
 import dev.nucleusframework.window.tao.popup.TaoPopupHostWindows
 import dev.nucleusframework.window.tao.popup.TaoPopupSceneLayerWindows
 import dev.nucleusframework.window.tao.releaseWindowsTextureImports
+import dev.nucleusframework.window.tao.textureViewPresentedFrameMarker
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -179,6 +181,7 @@ internal class TaoComposeSceneHostWindows(
     val windowsTextureHostState: MutableState<TaoWindowsTextureHost?> = mutableStateOf(null)
     private val textureViewHostCapabilitiesState: MutableState<TextureViewHostCapabilities> =
         mutableStateOf(TextureViewHostCapabilities.UNAVAILABLE)
+    private val textureViewHostGeneration = TextureViewHostGenerationTracker()
     private var extendedSceneActive: Boolean = false
     private var standardPresentedFrameCount: Long = 0L
 
@@ -1400,12 +1403,13 @@ internal class TaoComposeSceneHostWindows(
             return
         }
         val extended = extendedSceneActive
-        val presentedFrames =
+        val nativePresentedFrames =
             if (extended) {
                 NativeTaoGlBridge.nativePresentedFrameCount(handle)
             } else {
                 standardPresentedFrameCount
             }
+        val presentedFrames = textureViewPresentedFrameMarker(nativePresentedFrames)
         val sdrWhite = if (extended) NativeTaoGlBridge.nativeSdrWhiteLevelNits(handle) else 80f
         val maximum = if (extended) NativeTaoGlBridge.nativeMaximumLuminanceNits(handle) else 80f
         textureViewHostCapabilitiesState.value =
@@ -1427,11 +1431,15 @@ internal class TaoComposeSceneHostWindows(
                 maximumLuminanceNits = maximum,
                 headroom = if (extended) NativeTaoGlBridge.nativeHeadroom(handle) else 1f,
                 generation =
-                    if (extended) {
-                        NativeTaoGlBridge.nativeOutputGeneration(handle)
-                    } else {
-                        1L
-                    },
+                    textureViewHostGeneration.resolve(
+                        surfaceToken = handle,
+                        nativeGeneration =
+                            if (extended) {
+                                NativeTaoGlBridge.nativeOutputGeneration(handle)
+                            } else {
+                                1L
+                            },
+                    ),
                 presentedFrameCount = presentedFrames,
                 outputPixelFormat =
                     if (extended) {
@@ -1677,6 +1685,7 @@ internal class TaoComposeSceneHostWindows(
             directContext?.let(::releaseWindowsTextureImports)
             windowsTextureHostState.value = null
             textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
+            textureViewHostGeneration.reset()
             directContext?.close()
             directContext = null
             attachedHostCount.decrementAndGet()

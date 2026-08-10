@@ -114,7 +114,18 @@ public class TextureViewStreamController : AutoCloseable {
         frame: TextureViewFrame,
     ): Boolean =
         synchronized(lock) {
-            if (closed || consumerToken !== token || frame.isReleased) return@synchronized false
+            // A producer may replace a frame after composition read it but before the
+            // frame lease is created. Never acquire that stale buffer: submitFrame has
+            // already decided it is skippable and may release it immediately after
+            // dropping this lock.
+            if (
+                closed ||
+                consumerToken !== token ||
+                currentFrame.value !== frame ||
+                frame.isReleased
+            ) {
+                return@synchronized false
+            }
             acquiredFrames[frame] = (acquiredFrames[frame] ?: 0) + 1
             true
         }
@@ -220,8 +231,7 @@ public class TextureViewStreamController : AutoCloseable {
     }
 
     /** Guarded by [lock]. */
-    private fun takePendingReleaseFence(frame: TextureViewFrame): Int =
-        pendingReleaseFences.remove(frame) ?: NO_FENCE
+    private fun takePendingReleaseFence(frame: TextureViewFrame): Int = pendingReleaseFences.remove(frame) ?: NO_FENCE
 
     private fun newestReleaseFence(
         previous: Int,

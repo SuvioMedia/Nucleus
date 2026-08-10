@@ -41,8 +41,9 @@ import dev.nucleusframework.window.tao.TaoTrackpadPhase
 import dev.nucleusframework.window.tao.TaoWindow
 import dev.nucleusframework.window.tao.TextureViewHostCapabilities
 import dev.nucleusframework.window.tao.TextureViewHostDynamicRange
-import dev.nucleusframework.window.tao.TextureViewHostPresentationState
+import dev.nucleusframework.window.tao.TextureViewHostGenerationTracker
 import dev.nucleusframework.window.tao.TextureViewHostPixelFormat
+import dev.nucleusframework.window.tao.TextureViewHostPresentationState
 import dev.nucleusframework.window.tao.deco.ResizeFrameDecoration
 import dev.nucleusframework.window.tao.deco.TaoLinuxOverlayController
 import dev.nucleusframework.window.tao.deco.TaoLinuxOverlayControllerImpl
@@ -58,6 +59,7 @@ import dev.nucleusframework.window.tao.ffi.NativeTaoLinuxTouchBridge
 import dev.nucleusframework.window.tao.popup.TaoPopupHostLinux
 import dev.nucleusframework.window.tao.popup.TaoPopupSceneLayerLinux
 import dev.nucleusframework.window.tao.releaseGlTextureImports
+import dev.nucleusframework.window.tao.textureViewPresentedFrameMarker
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -203,6 +205,7 @@ internal class TaoComposeSceneHostLinux(
     val glTextureHostState: MutableState<TaoGlTextureHost?> = mutableStateOf(null)
     private val textureViewHostCapabilitiesState: MutableState<TextureViewHostCapabilities> =
         mutableStateOf(TextureViewHostCapabilities.UNAVAILABLE)
+    private val textureViewHostGeneration = TextureViewHostGenerationTracker()
     private var extendedSceneActive: Boolean = false
     private var sceneFramebufferId: Int = 0
     private var outputMode: Int = NativeTaoEglBridge.OUTPUT_MODE_SDR
@@ -635,7 +638,8 @@ internal class TaoComposeSceneHostLinux(
                 buildList {
                     listOf(NucleusDrmFormat.ARGB8888, NucleusDrmFormat.ABGR16161616F).forEach { format ->
                         val modifiers =
-                            NativeTaoLinuxTextureBridge.nativeDmaBufModifiers(format)
+                            NativeTaoLinuxTextureBridge
+                                .nativeDmaBufModifiers(format)
                                 ?.toList()
                                 .orEmpty()
                         if (modifiers.isNotEmpty()) add(LinuxTextureFormatModifiers(format, modifiers))
@@ -706,6 +710,7 @@ internal class TaoComposeSceneHostLinux(
         directContext?.let(::releaseGlTextureImports)
         glTextureHostState.value = null
         textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
+        textureViewHostGeneration.reset()
         extendedSceneActive = false
         sceneFramebufferId = 0
         outputMode = NativeTaoEglBridge.OUTPUT_MODE_SDR
@@ -1584,7 +1589,8 @@ internal class TaoComposeSceneHostLinux(
             textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
             return
         }
-        val presentedFrames = NativeTaoEglBridge.nativePresentedFrameCount(handle)
+        val presentedFrames =
+            textureViewPresentedFrameMarker(NativeTaoEglBridge.nativePresentedFrameCount(handle))
         textureViewHostCapabilitiesState.value =
             TextureViewHostCapabilities(
                 requestedMode = dynamicRangeMode,
@@ -1608,7 +1614,11 @@ internal class TaoComposeSceneHostLinux(
                     },
                 maximumLuminanceNits = null,
                 headroom = 1f,
-                generation = NativeTaoEglBridge.nativeOutputGeneration(handle),
+                generation =
+                    textureViewHostGeneration.resolve(
+                        surfaceToken = handle,
+                        nativeGeneration = NativeTaoEglBridge.nativeOutputGeneration(handle),
+                    ),
                 presentedFrameCount = presentedFrames,
                 outputPixelFormat =
                     when (outputMode) {
@@ -2320,6 +2330,7 @@ internal class TaoComposeSceneHostLinux(
         directContext?.let(::releaseGlTextureImports)
         glTextureHostState.value = null
         textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
+        textureViewHostGeneration.reset()
         extendedSceneActive = false
         sceneFramebufferId = 0
         outputMode = NativeTaoEglBridge.OUTPUT_MODE_SDR

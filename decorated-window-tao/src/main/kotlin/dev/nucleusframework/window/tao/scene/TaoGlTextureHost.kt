@@ -66,7 +66,9 @@ internal interface TaoGlTextureHost {
  * Weak host keys prevent an abandoned surface from pinning its GPU context.
  */
 private object LinuxTextureReleaseFenceRegistry {
-    private val pending = java.util.WeakHashMap<TaoGlTextureHost, java.util.IdentityHashMap<TextureViewController, Unit>>()
+    private val pending =
+        java.util
+            .WeakHashMap<TaoGlTextureHost, java.util.IdentityHashMap<TextureViewController, Unit>>()
 
     fun mark(
         host: TaoGlTextureHost,
@@ -80,7 +82,11 @@ private object LinuxTextureReleaseFenceRegistry {
     fun publish(host: TaoGlTextureHost) {
         val controllers =
             synchronized(pending) {
-                pending.remove(host)?.keys?.toList().orEmpty()
+                pending
+                    .remove(host)
+                    ?.keys
+                    ?.toList()
+                    .orEmpty()
             }
         controllers.forEach { controller ->
             controller.replaceReleaseFence(NativeTaoLinuxTextureBridge.nativeCreateReleaseFence())

@@ -27,8 +27,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.tao.GlobalLayoutDirection
-import dev.nucleusframework.window.tao.MacTextureViewProducerInfo
 import dev.nucleusframework.window.tao.MacOSStyle
+import dev.nucleusframework.window.tao.MacTextureViewProducerInfo
 import dev.nucleusframework.window.tao.TaoCursorIcon
 import dev.nucleusframework.window.tao.TaoEventCode
 import dev.nucleusframework.window.tao.TaoModifierMask
@@ -39,8 +39,9 @@ import dev.nucleusframework.window.tao.TaoTrackpadPhase
 import dev.nucleusframework.window.tao.TaoWindow
 import dev.nucleusframework.window.tao.TextureViewHostCapabilities
 import dev.nucleusframework.window.tao.TextureViewHostDynamicRange
-import dev.nucleusframework.window.tao.TextureViewHostPresentationState
+import dev.nucleusframework.window.tao.TextureViewHostGenerationTracker
 import dev.nucleusframework.window.tao.TextureViewHostPixelFormat
+import dev.nucleusframework.window.tao.TextureViewHostPresentationState
 import dev.nucleusframework.window.tao.dispatch.TaoMainDispatcher
 import dev.nucleusframework.window.tao.event.TaoSyntheticMouseWheelEvent
 import dev.nucleusframework.window.tao.event.taoKeyEvent
@@ -56,6 +57,7 @@ import dev.nucleusframework.window.tao.popup.TaoPopupSceneLayer
 import dev.nucleusframework.window.tao.render.LocalTaoTextSelectionA11yPublisher
 import dev.nucleusframework.window.tao.render.TaoSelectionAccessibilityObserver
 import dev.nucleusframework.window.tao.shouldApplyLargeCornerRadius
+import dev.nucleusframework.window.tao.textureViewPresentedFrameMarker
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitCancellation
@@ -176,6 +178,7 @@ internal class TaoComposeSceneHost(
     private var directContext: DirectContext? = null
     private val textureViewHostCapabilitiesState: MutableState<TextureViewHostCapabilities> =
         mutableStateOf(TextureViewHostCapabilities.UNAVAILABLE)
+    private val textureViewHostGeneration = TextureViewHostGenerationTracker()
     private var scene: ComposeScene? = null
 
     /** Parent locals bridged via [setSceneCompositionLocalContext]; applied to the scene once created. */
@@ -1451,7 +1454,8 @@ internal class TaoComposeSceneHost(
             textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
             return
         }
-        val presentedFrames = NativeMetalBridge.nativePresentedFrameCount(handle)
+        val presentedFrames =
+            textureViewPresentedFrameMarker(NativeMetalBridge.nativePresentedFrameCount(handle))
         textureViewHostCapabilitiesState.value =
             TextureViewHostCapabilities(
                 requestedMode =
@@ -1475,7 +1479,11 @@ internal class TaoComposeSceneHost(
                 sdrWhiteLevelNits = NativeMetalBridge.nativeSdrWhiteLevelNits(handle),
                 maximumLuminanceNits = NativeMetalBridge.nativeMaximumLuminanceNits(handle),
                 headroom = NativeMetalBridge.nativeHeadroom(handle),
-                generation = NativeMetalBridge.nativeOutputGeneration(handle),
+                generation =
+                    textureViewHostGeneration.resolve(
+                        surfaceToken = handle,
+                        nativeGeneration = NativeMetalBridge.nativeOutputGeneration(handle),
+                    ),
                 presentedFrameCount = presentedFrames,
                 outputPixelFormat =
                     if (extendedDynamicRange) {
@@ -1507,6 +1515,7 @@ internal class TaoComposeSceneHost(
         // Drop the TextureView handle before the context it points at dies.
         metalTextureHostCache.invalidate()
         textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
+        textureViewHostGeneration.reset()
         // Close the DirectContext on its owning thread (FIFO after any in-flight
         // replay), then shut the render thread down.
         val ctx = directContext

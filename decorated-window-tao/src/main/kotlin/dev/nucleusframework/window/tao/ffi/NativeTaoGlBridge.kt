@@ -17,6 +17,7 @@ private const val LIBRARY_NAME = "nucleus_tao_gl"
  * global display lock (the reason the old WGL backend's swap thread
  * never applied here).
  */
+@Suppress("TooManyFunctions")
 internal object NativeTaoGlBridge {
     init {
         // ANGLE (libEGL + libGLESv2) backs the Direct3D-11 render path.
