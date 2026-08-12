@@ -13,6 +13,7 @@ internal val textureLogger: Logger = Logger.getLogger("dev.nucleusframework.wind
 /** `GL_TEXTURE_2D` and the Skia GL formats of the textures we adopt. */
 private const val GL_TEXTURE_2D = 0x0DE1
 private const val GR_GL_RGBA8 = 0x8058
+private const val GR_GL_RGBA16F = 0x881A
 private const val GR_GL_R8 = 0x8229
 
 /** `DRM_FORMAT_R8` — the format every plane of a planar buffer is imported as. */
@@ -28,11 +29,21 @@ internal fun packedPlaneSpec(source: DmaBufTextureSource): PlaneSpec =
         fourcc = source.fourcc,
         widthPx = source.widthPx,
         heightPx = source.heightPx,
-        glFormat = GR_GL_RGBA8,
+        glFormat =
+            if (source.fourcc == NucleusDrmFormat.ABGR16161616F) {
+                GR_GL_RGBA16F
+            } else {
+                GR_GL_RGBA8
+            },
         // RGBA8 whatever the buffer's FourCC: the driver interprets the DRM format
         // when creating the EGLImage, so sampling the texture already yields
         // (R, G, B, A). X-variants (no alpha) sample as opaque.
-        colorType = ColorType.RGBA_8888,
+        colorType =
+            if (source.fourcc == NucleusDrmFormat.ABGR16161616F) {
+                ColorType.RGBA_F16
+            } else {
+                ColorType.RGBA_8888
+            },
     )
 
 /** Adopts an RGBA texture imported elsewhere — the producer-owned `EGLImage` path. */
@@ -41,7 +52,13 @@ internal fun adoptPackedPlane(
     handle: Long,
     widthPx: Int,
     heightPx: Int,
-): ImportedPlane? = adoptPlane(host, handle, widthPx, heightPx, GR_GL_RGBA8, ColorType.RGBA_8888)
+    colorInfo: TextureColorInfo,
+): ImportedPlane? =
+    if (colorInfo.encoding == TextureColorEncoding.EXTENDED_LINEAR_SRGB) {
+        adoptPlane(host, handle, widthPx, heightPx, GR_GL_RGBA16F, ColorType.RGBA_F16)
+    } else {
+        adoptPlane(host, handle, widthPx, heightPx, GR_GL_RGBA8, ColorType.RGBA_8888)
+    }
 
 /** The luma plane: `R8` is its actual DRM format, so nothing is reinterpreted. */
 internal fun lumaSpec(source: YuvDmaBufTextureSource): PlaneSpec =

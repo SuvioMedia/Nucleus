@@ -134,6 +134,14 @@ public fun DecoratedWindowScope.BasicTitleBar(
     val newFullscreenControls = modifier.hasNewFullscreenControls()
     val macOSLargeCornerRadius = modifier.hasMacOSLargeCornerRadius()
     val isMacOS = Platform.Current == Platform.MacOS
+    val fullscreenOverlaySupported =
+        if (isMacOS) {
+            remember {
+                NativeMetalBridge.isLoaded && NativeMetalBridge.nativeIsMacOSTahoeOrLater()
+            }
+        } else {
+            true
+        }
     if (isMacOS && macOSLargeCornerRadius) {
         LaunchedEffect(taoWindow) {
             val nsView = NativeTaoBridge.nativeNsViewHandle(taoWindow.handle)
@@ -165,6 +173,12 @@ public fun DecoratedWindowScope.BasicTitleBar(
             if (isMacOS && newFullscreenControls && NativeMetalBridge.isLoaded) {
                 val ptr = NativeTaoBridge.nativeNsViewHandle(taoWindow.handle)
                 if (ptr != 0L) {
+                    NativeMetalBridge.nativeSetFullscreenTitleBarOverlay(
+                        nsViewPtr = ptr,
+                        enabled = false,
+                        titleBarHeight = 0f,
+                        offsetPt = 0f,
+                    )
                     NativeMetalBridge.nativeSetNewFullscreenControls(ptr, false)
                 }
             }
@@ -284,11 +298,13 @@ public fun DecoratedWindowScope.BasicTitleBar(
             .windowDragArea(window = taoWindow)
 
     val overlayHolder = LocalFullscreenTitleBarHolder.current
-    val useOverlay =
-        newFullscreenControls &&
-            currentState.isFullscreen &&
-            (Platform.Current == Platform.Windows || Platform.Current == Platform.Linux) &&
-            overlayHolder != null
+    val activeOverlayHolder =
+        overlayHolder?.takeIf {
+            newFullscreenControls &&
+                currentState.isFullscreen &&
+                fullscreenOverlaySupported
+        }
+    val useOverlay = activeOverlayHolder != null
 
     val titleBarRendering: @Composable () -> Unit = {
         GenericTitleBarImpl(
@@ -362,11 +378,11 @@ public fun DecoratedWindowScope.BasicTitleBar(
         )
     }
 
-    // newFullscreenControls: when fullscreen on Windows, hand the title-bar
-    // rendering off to the [FullscreenOverlayHost] which slides it in/out
-    // based on pointer Y. The inline slot collapses to nothing so the user
-    // content fills the screen, and the deco's caption zone is zeroed so the
-    // WndProc returns HTCLIENT everywhere (the overlay handles its own input).
+    // newFullscreenControls: hand fullscreen title-bar rendering to
+    // [FullscreenOverlayHost], which slides it in/out based on pointer Y. The
+    // inline slot collapses so user content fills the screen. Windows also
+    // zeroes its caption zone; macOS synchronises the native traffic-light
+    // replacements with the same animated offset below.
     //
     // The handoff runs during COMPOSITION, not in a SideEffect: these state
     // writes invalidate FullscreenOverlayHost's scope within the SAME frame,
@@ -377,23 +393,44 @@ public fun DecoratedWindowScope.BasicTitleBar(
     // exit was likewise one frame late (a frame with both bars).
     val latestTitleBarRendering by rememberUpdatedState(titleBarRendering)
     val overlayContent = remember { @Composable { latestTitleBarRendering() } }
-    if (useOverlay && overlayHolder != null) {
+    if (activeOverlayHolder != null) {
         val ctx = currentCompositionLocalContext
         heightHolder.value = 0f
-        overlayHolder.titleBarHeight = style.metrics.height
-        if (overlayHolder.compositionLocalContext !== ctx) {
-            overlayHolder.compositionLocalContext = ctx
+        activeOverlayHolder.titleBarHeight = style.metrics.height
+        activeOverlayHolder.revealInset = if (isMacOS) menuBarOffset else 0.dp
+        if (activeOverlayHolder.compositionLocalContext !== ctx) {
+            activeOverlayHolder.compositionLocalContext = ctx
         }
         // Stable lambda: assigning the same instance on every recomposition
         // keeps the holder's state from invalidating the overlay each frame.
-        if (overlayHolder.content !== overlayContent) {
-            overlayHolder.content = overlayContent
+        if (activeOverlayHolder.content !== overlayContent) {
+            activeOverlayHolder.offsetY = -style.metrics.height
+            activeOverlayHolder.content = overlayContent
         }
     } else {
         titleBarRendering()
         // Same-frame clear on the recomposition that turns the overlay off.
         if (overlayHolder != null && overlayHolder.content === overlayContent) {
             overlayHolder.content = null
+            overlayHolder.revealInset = 0.dp
+            overlayHolder.offsetY = 0.dp
+        }
+    }
+
+    // macOS renders its traffic lights in a native AppKit view. Keep that
+    // view on the same animated Y offset as FullscreenOverlayHost so the
+    // controls hide and reveal together with the Compose title bar.
+    if (isMacOS) {
+        val overlayOffset = activeOverlayHolder?.offsetY ?: 0.dp
+        LaunchedEffect(currentNsView, useOverlay, style.metrics.height, overlayOffset) {
+            if (currentNsView != 0L && NativeMetalBridge.isLoaded) {
+                NativeMetalBridge.nativeSetFullscreenTitleBarOverlay(
+                    nsViewPtr = currentNsView,
+                    enabled = useOverlay,
+                    titleBarHeight = style.metrics.height.value,
+                    offsetPt = overlayOffset.value,
+                )
+            }
         }
     }
 

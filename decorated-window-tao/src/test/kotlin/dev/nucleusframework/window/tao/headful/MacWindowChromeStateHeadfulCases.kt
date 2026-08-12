@@ -10,11 +10,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -22,8 +24,13 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import dev.nucleusframework.window.TitleBar
+import dev.nucleusframework.window.TitleBarPlacement
+import dev.nucleusframework.window.WindowScaffold
+import dev.nucleusframework.window.newFullscreenControls
 import dev.nucleusframework.window.tao.NativeView
 import dev.nucleusframework.window.tao.NucleusPlatformView
+import dev.nucleusframework.window.tao.deco.LocalFullscreenTitleBarHolder
 import dev.nucleusframework.window.tao.ffi.NativeMetalBridge
 import dev.nucleusframework.window.tao.ffi.NativeTaoBridge
 import dev.nucleusframework.window.tao.ffi.NativeTaoMacOsNativeViewBridge
@@ -49,6 +56,7 @@ internal object MacWindowChromeStateHeadfulCases {
         listOf(
             overlayDetachKeepsWindowChromeState(),
             setFocusableDoesNotLeakWindowRetains(),
+            fullscreenTitleBarAutoHidesAndReveals(),
             fullscreenWithLiveNativeViewDoesNotFreeze(),
             nativeViewTracksFullscreenRoundTrip(),
             renderThreadHopStaysCheap(),
@@ -145,6 +153,108 @@ internal object MacWindowChromeStateHeadfulCases {
         }
 
     private const val FOCUSABLE_CALLS = 40
+
+    /**
+     * A title bar opted into the Safari-style fullscreen controls must leave
+     * the content fully immersive at rest, reveal at the top edge, and hide
+     * again after the pointer leaves. This exercises the same scaffold shape
+     * used by Suvio: the scaffold itself keeps its bar slot enabled while
+     * [TitleBar] hands rendering to the root fullscreen overlay.
+     */
+    private fun fullscreenTitleBarAutoHidesAndReveals(): TaoWindowTestCase {
+        val overlayOffset = AtomicReference(Float.NaN)
+        val overlayHeight = AtomicReference(Float.NaN)
+        return TaoWindowTestCase(
+            name = "macOS fullscreen title bar auto-hides and reveals at top edge",
+            timeoutMillis = 60_000L,
+            skip = {
+                when {
+                    !isMac -> "macOS only"
+                    !NativeMetalBridge.isLoaded -> "macOS native bridge unavailable"
+                    !NativeMetalBridge.nativeIsMacOSTahoeOrLater() -> "requires macOS 26 or later"
+                    else -> null
+                }
+            },
+            content = {
+                val scope = this
+                val fullscreenHolder = LocalFullscreenTitleBarHolder.current
+                LaunchedEffect(fullscreenHolder) {
+                    if (fullscreenHolder != null) {
+                        snapshotFlow {
+                            fullscreenHolder.offsetY.value to fullscreenHolder.titleBarHeight.value
+                        }.collect { (offset, height) ->
+                            overlayOffset.set(offset)
+                            overlayHeight.set(height)
+                        }
+                    }
+                }
+                WindowScaffold(
+                    titleBar = {
+                        with(scope) {
+                            TitleBar(Modifier.newFullscreenControls())
+                        }
+                    },
+                    titleBarPlacement = TitleBarPlacement.Overlay(autoHideInFullscreen = false),
+                ) {
+                    Box(Modifier.fillMaxSize().background(Color(0xFF203040)))
+                }
+            },
+        ) {
+            awaitUntil("window mapped") { bounds() != null }
+            settle()
+            val windowed = requireNotNull(bounds())
+
+            // Keep the pointer away from the reveal strip while entering
+            // fullscreen. If synthetic input is unavailable, the normal test
+            // runner cursor position still exercises the at-rest assertion.
+            HeadfulRobot.inject { robot ->
+                robot.mouseMove(
+                    (windowed[0] + windowed[2] / 2).toInt(),
+                    (windowed[1] + windowed[3] / 2).toInt(),
+                )
+            }
+            window.setFullscreen(true)
+            awaitUntil("entered fullscreen", timeoutMillis = FS_TIMEOUT_MS) {
+                val current = bounds() ?: return@awaitUntil false
+                current[2] > windowed[2] + FS_GROWTH_MIN_PX
+            }
+            awaitUntil("fullscreen title bar hidden at rest") {
+                val height = overlayHeight.get()
+                val offset = overlayOffset.get()
+                height > 0f && offset <= -height + OVERLAY_OFFSET_TOLERANCE_DP
+            }
+
+            val fullscreen = requireNotNull(bounds())
+            val injected =
+                HeadfulRobot.inject { robot ->
+                    robot.mouseMove(
+                        (fullscreen[0] + fullscreen[2] / 2).toInt(),
+                        fullscreen[1].toInt() + 1,
+                    )
+                }
+            if (injected != null) {
+                awaitUntil("fullscreen title bar revealed at top edge") {
+                    overlayOffset.get() >= -OVERLAY_OFFSET_TOLERANCE_DP
+                }
+                HeadfulRobot.inject { robot ->
+                    robot.mouseMove(
+                        (fullscreen[0] + fullscreen[2] / 2).toInt(),
+                        (fullscreen[1] + fullscreen[3] / 2).toInt(),
+                    )
+                }
+                awaitUntil("fullscreen title bar hidden after pointer left") {
+                    val height = overlayHeight.get()
+                    overlayOffset.get() <= -height + OVERLAY_OFFSET_TOLERANCE_DP
+                }
+            }
+
+            window.setFullscreen(false)
+            awaitUntil("left fullscreen", timeoutMillis = FS_TIMEOUT_MS) {
+                val current = bounds() ?: return@awaitUntil false
+                abs(current[2] - windowed[2]) <= FS_RESTORE_TOLERANCE_PX
+            }
+        }
+    }
 
     /**
      * Entering fullscreen with a live `NativeView` must not deadlock. The
@@ -556,5 +666,6 @@ internal object MacWindowChromeStateHeadfulCases {
     private const val FS_RESTORE_TOLERANCE_PX = 64
     private const val FS_SETTLE_MS = 1_200L
     private const val TRACK_TOLERANCE_PX = 8
+    private const val OVERLAY_OFFSET_TOLERANCE_DP = 0.5f
     private const val POST_FS_RESIZE_DELTA_DP = 120.0
 }

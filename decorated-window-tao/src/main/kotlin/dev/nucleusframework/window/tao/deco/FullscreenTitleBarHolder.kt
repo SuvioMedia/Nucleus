@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalContext
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,6 +37,8 @@ import androidx.compose.ui.unit.dp
 internal class FullscreenTitleBarHolder {
     var content: (@Composable () -> Unit)? by mutableStateOf(null)
     var titleBarHeight: Dp by mutableStateOf(0.dp)
+    var revealInset: Dp by mutableStateOf(0.dp)
+    var offsetY: Dp by mutableStateOf(0.dp)
     var compositionLocalContext: CompositionLocalContext? by mutableStateOf(null)
 }
 
@@ -69,13 +72,13 @@ internal fun FullscreenOverlayHost(
         if (!isFullscreen) {
             visible = false
             holder.content = null
+            holder.revealInset = 0.dp
         }
     }
 
     val rootModifier =
         if (isFullscreen) {
-            modifier.pointerInput(holder.titleBarHeight) {
-                val titleBarHeightPx = with(density) { holder.titleBarHeight.toPx() }
+            modifier.pointerInput(holder) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
@@ -84,7 +87,11 @@ internal fun FullscreenOverlayHost(
                                 .firstOrNull()
                                 ?.position
                                 ?.y ?: continue
-                        visible = y < titleBarHeightPx
+                        val revealRegionPx =
+                            with(density) {
+                                (holder.titleBarHeight + holder.revealInset).toPx()
+                            }
+                        visible = y < revealRegionPx
                     }
                 }
             }
@@ -92,14 +99,29 @@ internal fun FullscreenOverlayHost(
             modifier
         }
 
+    val hasOverlay = isFullscreen && holder.content != null
+    // macOS can temporarily take ownership of the top-edge pointer while its
+    // system menu bar slides in. The native menu-bar monitor publishes that
+    // reveal as [revealInset], so treat a non-zero inset as an independent
+    // visibility signal instead of relying solely on Compose pointer events.
+    val revealedByPlatformInset = holder.revealInset > 0.dp
+    val offsetY by animateDpAsState(
+        targetValue =
+            if (hasOverlay && !visible && !revealedByPlatformInset) {
+                -holder.titleBarHeight
+            } else {
+                0.dp
+            },
+        animationSpec = tween(durationMillis = 200),
+    )
+    SideEffect {
+        if (holder.offsetY != offsetY) holder.offsetY = offsetY
+    }
+
     Box(modifier = rootModifier) {
         content()
 
-        if (isFullscreen && holder.content != null) {
-            val offsetY by animateDpAsState(
-                targetValue = if (visible) 0.dp else -holder.titleBarHeight,
-                animationSpec = tween(durationMillis = 200),
-            )
+        if (hasOverlay) {
             val ctx = holder.compositionLocalContext
             Box(
                 modifier =

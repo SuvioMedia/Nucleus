@@ -16,6 +16,9 @@ package dev.nucleusframework.window.tao.ffi
 internal object NativeTaoTextureBridge {
     val isLoaded: Boolean get() = NativeTaoGlBridge.isLoaded
 
+    const val FORMAT_RGBA8: Int = 0
+    const val FORMAT_RGBA16_FLOAT: Int = 1
+
     /**
      * Imports a legacy DXGI shared handle (`IDXGIResource::GetSharedHandle`)
      * as a GL ES texture in the host window's ANGLE context: the shared
@@ -47,6 +50,10 @@ internal object NativeTaoTextureBridge {
     /** GL texture id backing the import — fed to Skia's `BackendTexture.makeGL`. */
     @JvmStatic
     external fun nativeGlTextureId(handle: Long): Int
+
+    /** Pixel format discovered from the shared D3D11 texture. */
+    @JvmStatic
+    external fun nativePixelFormat(handle: Long): Int
 
     /** Whether the import runs the keyed-mutex staging path (tear-free). */
     @JvmStatic
@@ -108,6 +115,14 @@ internal object NativeTaoTextureBridge {
         useKeyedMutex: Boolean,
     ): Long
 
+    /** Half-float counterpart used by extended-linear import tests. */
+    @JvmStatic
+    external fun nativeTestProducerCreateExtended(
+        widthPx: Int,
+        heightPx: Int,
+        useKeyedMutex: Boolean,
+    ): Long
+
     /** Legacy DXGI shared handle of the producer's texture. */
     @JvmStatic
     external fun nativeTestProducerSharedHandle(producer: Long): Long
@@ -121,6 +136,16 @@ internal object NativeTaoTextureBridge {
     external fun nativeTestProducerFill(
         producer: Long,
         argb: Int,
+    )
+
+    /** Clears an `R16G16B16A16_FLOAT` producer without clamping. */
+    @JvmStatic
+    external fun nativeTestProducerFillExtended(
+        producer: Long,
+        red: Float,
+        green: Float,
+        blue: Float,
+        alpha: Float,
     )
 
     /**

@@ -23,6 +23,10 @@ private const val LIBRARY_NAME = "nucleus_tao_egl"
  */
 @Suppress("TooManyFunctions")
 internal object NativeTaoEglBridge {
+    const val OUTPUT_MODE_SDR: Int = 0
+    const val OUTPUT_MODE_SCRGB: Int = 1
+    const val OUTPUT_MODE_BT2020_PQ: Int = 2
+
     private val loaded = NativeLibraryLoader.load(LIBRARY_NAME, NativeTaoEglBridge::class.java)
 
     val isLoaded: Boolean get() = loaded
@@ -73,6 +77,7 @@ internal object NativeTaoEglBridge {
         heightPx: Int,
         bufferScale: Int,
         swapInterval: Int,
+        extendedDynamicRange: Boolean,
     ): Long
 
     @JvmStatic
@@ -145,7 +150,24 @@ internal object NativeTaoEglBridge {
 
     /** Pumps the back-buffer to screen via `eglSwapBuffers`. */
     @JvmStatic
-    external fun nativePresent(handle: Long)
+    external fun nativePresent(handle: Long): Boolean
+
+    @JvmStatic
+    external fun nativeUsesExtendedScene(handle: Long): Boolean
+
+    /** GL framebuffer Skia must render into (0 except for the Wayland PQ path). */
+    @JvmStatic
+    external fun nativeFramebufferId(handle: Long): Int
+
+    /** One of [OUTPUT_MODE_SDR], [OUTPUT_MODE_SCRGB] or [OUTPUT_MODE_BT2020_PQ]. */
+    @JvmStatic
+    external fun nativeOutputMode(handle: Long): Int
+
+    @JvmStatic
+    external fun nativeOutputGeneration(handle: Long): Long
+
+    @JvmStatic
+    external fun nativePresentedFrameCount(handle: Long): Long
 
     /**
      * Calls `eglSwapInterval` on the EGL display. Must be called while the

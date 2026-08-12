@@ -25,6 +25,9 @@ internal inline fun renderGlFrame(
     directContext: DirectContext,
     bundle: TaoSceneBundle,
     clearColorArgb: Int,
+    extendedDynamicRange: Boolean = false,
+    framebufferId: Int = 0,
+    crossinline afterFlush: () -> Unit = {},
     crossinline present: () -> Unit,
 ) {
     renderGlFrame(
@@ -32,6 +35,9 @@ internal inline fun renderGlFrame(
         heightPx = heightPx,
         directContext = directContext,
         clearColorArgb = clearColorArgb,
+        extendedDynamicRange = extendedDynamicRange,
+        framebufferId = framebufferId,
+        afterFlush = afterFlush,
         present = present,
     ) { canvas, nanoTime ->
         bundle.render(canvas, nanoTime)
@@ -43,6 +49,9 @@ internal inline fun renderGlFrame(
     heightPx: Int,
     directContext: DirectContext,
     clearColorArgb: Int,
+    extendedDynamicRange: Boolean = false,
+    framebufferId: Int = 0,
+    crossinline afterFlush: () -> Unit = {},
     crossinline present: () -> Unit,
     crossinline render: (org.jetbrains.skia.Canvas, Long) -> Unit,
 ) {
@@ -53,16 +62,26 @@ internal inline fun renderGlFrame(
             height = heightPx,
             sampleCnt = 0,
             stencilBits = 8,
-            fbId = 0,
-            fbFormat = FramebufferFormat.GR_GL_RGBA8,
+            fbId = framebufferId,
+            fbFormat =
+                if (extendedDynamicRange) {
+                    FramebufferFormat.GR_GL_RGBA16F
+                } else {
+                    FramebufferFormat.GR_GL_RGBA8
+                },
         )
     val surface =
         Surface.makeFromBackendRenderTarget(
             context = directContext,
             rt = rt,
             origin = SurfaceOrigin.BOTTOM_LEFT,
-            colorFormat = SurfaceColorFormat.RGBA_8888,
-            colorSpace = ColorSpace.sRGB,
+            colorFormat =
+                if (extendedDynamicRange) {
+                    skikoRgbaF16SurfaceColorFormat
+                } else {
+                    SurfaceColorFormat.RGBA_8888
+                },
+            colorSpace = if (extendedDynamicRange) ColorSpace.sRGBLinear else ColorSpace.sRGB,
         ) ?: run {
             rt.close()
             return
@@ -71,6 +90,7 @@ internal inline fun renderGlFrame(
         surface.canvas.clear(clearColorArgb)
         render(surface.canvas, System.nanoTime())
         surface.flushAndSubmit(syncCpu = false)
+        afterFlush()
         present()
     } finally {
         surface.close()
