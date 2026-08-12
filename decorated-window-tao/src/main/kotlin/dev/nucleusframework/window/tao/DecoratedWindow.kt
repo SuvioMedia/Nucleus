@@ -35,6 +35,7 @@ import dev.nucleusframework.window.GlobalModalDialogCount
 import dev.nucleusframework.window.LocalModalDialogCount
 import dev.nucleusframework.window.LocalTitleBarInfo
 import dev.nucleusframework.window.TitleBarInfo
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.internal.isDark
 import dev.nucleusframework.window.tao.a11y.TaoSemanticsObserver
 import dev.nucleusframework.window.tao.deco.FullscreenOverlayHost
@@ -260,6 +261,8 @@ internal fun ApplicationScope.openDecoratedWindow(
     // policy, app-wide; Windows: WS_EX_TOOLWINDOW, per-window; Linux: GTK
     // skip-taskbar/skip-pager hints, per-window, X11/XWayland only).
     hiddenFromDock: Boolean = false,
+    macOSExtendedDynamicRange: Boolean = false,
+    dynamicRangeMode: WindowDynamicRangeMode = WindowDynamicRangeMode.STANDARD,
     // Parent composition locals to bridge into this window's own ComposeScene
     // (applied above the scene's LocalComposeSceneContext so popups still route
     // into THIS scene). Used by DecoratedDialog so a dialog's content sees the
@@ -376,6 +379,7 @@ internal fun ApplicationScope.openDecoratedWindow(
             initialCompositionLocalContext,
             nativePopupLayers,
             transparent,
+            dynamicRangeMode,
             exceptionHandler,
             hotReloadContent,
         )
@@ -400,6 +404,7 @@ internal fun ApplicationScope.openDecoratedWindow(
             initialCompositionLocalContext,
             nativePopupLayers,
             transparent,
+            dynamicRangeMode,
             exceptionHandler,
             hotReloadContent,
         )
@@ -411,6 +416,9 @@ internal fun ApplicationScope.openDecoratedWindow(
             macOSStyle = macOSStyle,
             hiddenFromDock = hiddenFromDock,
             fullyTransparent = transparent,
+            extendedDynamicRange =
+                macOSExtendedDynamicRange ||
+                    dynamicRangeMode == WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE,
         )
     host.nativePopupLayers = nativePopupLayers
     host.previewKeyHandler = onPreviewKeyEvent
@@ -556,6 +564,10 @@ internal fun ApplicationScope.openDecoratedWindow(
     }
     window.onResized { w, h ->
         host.onResized(w, h)
+        // CAMetalLayer geometry is already updated synchronously by host.onResized(). Keep the
+        // expensive scene record/replay asynchronous and coalesced to vsync so live resize never
+        // serializes AppKit with video texture snapshots or NativeView transaction commits.
+        host.renderResizeFrame()
         // Traffic-light centring is now driven reactively from the title-bar
         // height (see the snapshotFlow in setContent), so it no longer needs to
         // be kicked off here on first resize.
@@ -660,10 +672,16 @@ private fun ApplicationScope.openDecoratedWindowLinux(
     initialCompositionLocalContext: CompositionLocalContext?,
     nativePopupLayers: Boolean,
     transparent: Boolean,
+    dynamicRangeMode: WindowDynamicRangeMode,
     exceptionHandler: WindowExceptionHandler,
     content: @Composable TaoDecoratedWindowScope.() -> Unit,
 ): TaoWindow {
-    val host = TaoComposeSceneHostLinux(window, fullyTransparent = transparent)
+    val host =
+        TaoComposeSceneHostLinux(
+            window,
+            fullyTransparent = transparent,
+            dynamicRangeMode = dynamicRangeMode,
+        )
     host.nativePopupLayers = nativePopupLayers
     host.previewKeyHandler = onPreviewKeyEvent
     host.keyHandler = onKeyEvent
@@ -1078,6 +1096,7 @@ private fun ApplicationScope.openDecoratedWindowWindows(
     initialCompositionLocalContext: CompositionLocalContext?,
     nativePopupLayers: Boolean,
     transparent: Boolean,
+    dynamicRangeMode: WindowDynamicRangeMode,
     exceptionHandler: WindowExceptionHandler,
     content: @Composable TaoDecoratedWindowScope.() -> Unit,
 ): TaoWindow {
@@ -1086,6 +1105,7 @@ private fun ApplicationScope.openDecoratedWindowWindows(
             window,
             fullyTransparent = transparent,
             borderlessChrome = undecorated,
+            dynamicRangeMode = dynamicRangeMode,
         )
     host.nativePopupLayers = nativePopupLayers
     host.previewKeyHandler = onPreviewKeyEvent

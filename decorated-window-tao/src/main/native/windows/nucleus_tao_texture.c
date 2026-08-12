@@ -92,6 +92,9 @@ static volatile BOOL sTexResolved = FALSE;
 static BOOL sTexAvailable = FALSE;
 
 static PFNEGLGETERRORPROC                      pEglGetError2                     = NULL;
+static PFNEGLCHOOSECONFIGPROC                  pEglChooseConfig2                 = NULL;
+static PFNEGLCREATECONTEXTPROC                 pEglCreateContext2                = NULL;
+static PFNEGLDESTROYCONTEXTPROC                pEglDestroyContext2               = NULL;
 static PFNEGLQUERYDISPLAYATTRIBEXTPROC         pEglQueryDisplayAttribEXT2        = NULL;
 static PFNEGLQUERYDEVICEATTRIBEXTPROC          pEglQueryDeviceAttribEXT2         = NULL;
 static PFNEGLCREATEPBUFFERFROMCLIENTBUFFERPROC pEglCreatePbufferFromClientBuffer = NULL;
@@ -112,6 +115,9 @@ static void resolveTexEntryPoints(void) {
     if (sTexResolved) return;
 
     pEglGetError2 = (PFNEGLGETERRORPROC) nucleus_tao_host_egl_proc("eglGetError");
+    pEglChooseConfig2 = (PFNEGLCHOOSECONFIGPROC) nucleus_tao_host_egl_proc("eglChooseConfig");
+    pEglCreateContext2 = (PFNEGLCREATECONTEXTPROC) nucleus_tao_host_egl_proc("eglCreateContext");
+    pEglDestroyContext2 = (PFNEGLDESTROYCONTEXTPROC) nucleus_tao_host_egl_proc("eglDestroyContext");
     pEglQueryDisplayAttribEXT2 = (PFNEGLQUERYDISPLAYATTRIBEXTPROC)
         nucleus_tao_host_egl_proc("eglQueryDisplayAttribEXT");
     pEglQueryDeviceAttribEXT2 = (PFNEGLQUERYDEVICEATTRIBEXTPROC)
@@ -133,7 +139,8 @@ static void resolveTexEntryPoints(void) {
     pglTexParameteri  = (PFN_glTexParameteri)  nucleus_tao_host_egl_proc("glTexParameteri");
     pglGetIntegerv    = (PFN_glGetIntegerv)    nucleus_tao_host_egl_proc("glGetIntegerv");
 
-    sTexAvailable = (pEglCreatePbufferFromClientBuffer && pEglBindTexImage &&
+    sTexAvailable = (pEglChooseConfig2 && pEglCreateContext2 && pEglDestroyContext2 &&
+                     pEglCreatePbufferFromClientBuffer && pEglBindTexImage &&
                      pEglReleaseTexImage && pEglMakeCurrent2 && pEglGetCurrentSurface2 &&
                      pEglDestroySurface2 && pEglQueryDisplayAttribEXT2 &&
                      pEglQueryDeviceAttribEXT2 && pglGenTextures && pglDeleteTextures &&
@@ -259,7 +266,10 @@ static const GUID kIID_IDXGIResource =
 typedef struct {
     EGLDisplay           dpy;
     EGLSurface           pbuffer;
+    EGLContext           importCtx;
+    BOOL                 ownsImportCtx;
     unsigned int         texId;
+    int                  pixelFormat;
     /* Surfaces/context that were current when this import ran, so binding the
      * pbuffer can be undone. Import and destroy are called from inside
      * ComposeScene.render(), i.e. in the MIDDLE of a host frame whose Skia
@@ -277,6 +287,43 @@ typedef struct {
     IDXGIKeyedMutex     *keyedMutex;
     ID3D11DeviceContext *copyCtx; /* ANGLE device's immediate context */
 } NucleusExternalTexture;
+
+#define NUCLEUS_TEX_FORMAT_RGBA8       0
+#define NUCLEUS_TEX_FORMAT_RGBA16FLOAT 1
+
+/* A float D3D client buffer needs a float EGLConfig. Build the binding in a
+ * tiny context sharing resources with the host rather than mutating Skia's
+ * active GL context in the middle of ComposeScene.render(). The resulting GL
+ * texture name is visible from the host context through the share group. */
+static EGLContext createFloatImportContext(
+    EGLDisplay dpy, EGLContext hostCtx, EGLConfig *outConfig)
+{
+    const EGLint cfgAttribs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RED_SIZE, 16,
+        EGL_GREEN_SIZE, 16,
+        EGL_BLUE_SIZE, 16,
+        EGL_ALPHA_SIZE, 16,
+        EGL_DEPTH_SIZE, 0,
+        EGL_STENCIL_SIZE, 0,
+        EGL_COLOR_COMPONENT_TYPE_EXT, EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT,
+        EGL_NONE
+    };
+    EGLConfig config = NULL;
+    EGLint count = 0;
+    if (!pEglChooseConfig2(dpy, cfgAttribs, &config, 1, &count) || count < 1 || !config) {
+        return EGL_NO_CONTEXT;
+    }
+    const EGLint ctx3[] = { EGL_CONTEXT_MAJOR_VERSION, 3, EGL_NONE };
+    const EGLint ctx2[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    EGLContext context = pEglCreateContext2(dpy, config, hostCtx, ctx3);
+    if (context == EGL_NO_CONTEXT) {
+        context = pEglCreateContext2(dpy, config, hostCtx, ctx2);
+    }
+    if (context != EGL_NO_CONTEXT) *outConfig = config;
+    return context;
+}
 
 JNIEXPORT jlong JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeImportD3D11SharedHandle(
@@ -326,6 +373,25 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeImportD3D1
         return -(jlong)0x20003;
     }
 
+    D3D11_TEXTURE2D_DESC sharedDesc;
+    ID3D11Texture2D_GetDesc(sharedTex, &sharedDesc);
+    if (sharedDesc.Width != (UINT)widthPx || sharedDesc.Height != (UINT)heightPx) {
+        ID3D11Texture2D_Release(sharedTex);
+        return -(jlong)0x20004;
+    }
+    int pixelFormat = NUCLEUS_TEX_FORMAT_RGBA8;
+    EGLContext importCtx = ctx;
+    BOOL ownsImportCtx = FALSE;
+    BOOL requiresFloatConfig = FALSE;
+    if (sharedDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+        pixelFormat = NUCLEUS_TEX_FORMAT_RGBA16FLOAT;
+        requiresFloatConfig = TRUE;
+    } else if (sharedDesc.Format != DXGI_FORMAT_R8G8B8A8_UNORM &&
+               sharedDesc.Format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
+        ID3D11Texture2D_Release(sharedTex);
+        return -(jlong)0x20006;
+    }
+
     /* Keyed-mutex detection: producers that opted into
      * D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX get the tear-free staging
      * path; the mutex interface simply isn't there otherwise. */
@@ -336,8 +402,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeImportD3D1
     ID3D11Texture2D     *privateTex = NULL;
     ID3D11DeviceContext *copyCtx = NULL;
     if (keyedMutex) {
-        D3D11_TEXTURE2D_DESC desc;
-        ID3D11Texture2D_GetDesc(sharedTex, &desc);
+        D3D11_TEXTURE2D_DESC desc = sharedDesc;
         desc.MipLevels = 1;
         desc.ArraySize = 1;
         desc.Usage = D3D11_USAGE_DEFAULT;
@@ -355,6 +420,21 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeImportD3D1
         }
     }
 
+    if (requiresFloatConfig) {
+        EGLConfig floatConfig = NULL;
+        EGLContext floatContext = createFloatImportContext(dpy, ctx, &floatConfig);
+        if (floatContext == EGL_NO_CONTEXT) {
+            if (keyedMutex) IDXGIKeyedMutex_Release(keyedMutex);
+            if (copyCtx) ID3D11DeviceContext_Release(copyCtx);
+            if (privateTex) ID3D11Texture2D_Release(privateTex);
+            ID3D11Texture2D_Release(sharedTex);
+            return -(jlong)0x20007;
+        }
+        importCtx = floatContext;
+        ownsImportCtx = TRUE;
+        cfg = floatConfig;
+    }
+
     const EGLint pbAttribs[] = {
         EGL_TEXTURE_FORMAT, EGL_TEXTURE_RGBA,
         EGL_TEXTURE_TARGET, EGL_TEXTURE_2D,
@@ -368,6 +448,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeImportD3D1
         if (copyCtx) ID3D11DeviceContext_Release(copyCtx);
         if (privateTex) ID3D11Texture2D_Release(privateTex);
         ID3D11Texture2D_Release(sharedTex);
+        if (ownsImportCtx) pEglDestroyContext2(dpy, importCtx);
         return -err;
     }
 
@@ -381,7 +462,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeImportD3D1
     EGLSurface hostRead = pEglGetCurrentSurface2(EGL_READ);
     EGLBoolean bound = EGL_FALSE;
     unsigned int tex = 0;
-    if (pEglMakeCurrent2(dpy, pb, pb, ctx)) {
+    if (pEglMakeCurrent2(dpy, pb, pb, importCtx)) {
         int prevTex = 0;
         pglGetIntegerv(NUCLEUS_GL_TEXTURE_BINDING_2D, &prevTex);
         pglGenTextures(1, &tex);
@@ -405,27 +486,32 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeImportD3D1
         if (copyCtx) ID3D11DeviceContext_Release(copyCtx);
         if (privateTex) ID3D11Texture2D_Release(privateTex);
         ID3D11Texture2D_Release(sharedTex);
+        if (ownsImportCtx) pEglDestroyContext2(dpy, importCtx);
         return -err;
     }
 
     NucleusExternalTexture *t = (NucleusExternalTexture *)HeapAlloc(
         GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(NucleusExternalTexture));
     if (!t) {
-        pEglReleaseTexImage(dpy, pb, EGL_BACK_BUFFER);
-        pglDeleteTextures(1, &tex);
-        if (pEglGetCurrentSurface2(EGL_DRAW) == pb) {
-            restoreCurrent(dpy, hostDraw, hostRead, ctx);
+        if (pEglMakeCurrent2(dpy, pb, pb, importCtx)) {
+            pEglReleaseTexImage(dpy, pb, EGL_BACK_BUFFER);
+            pglDeleteTextures(1, &tex);
         }
+        restoreCurrent(dpy, hostDraw, hostRead, ctx);
         pEglDestroySurface2(dpy, pb);
         if (keyedMutex) IDXGIKeyedMutex_Release(keyedMutex);
         if (copyCtx) ID3D11DeviceContext_Release(copyCtx);
         if (privateTex) ID3D11Texture2D_Release(privateTex);
         ID3D11Texture2D_Release(sharedTex);
+        if (ownsImportCtx) pEglDestroyContext2(dpy, importCtx);
         return 0;
     }
     t->dpy = dpy;
     t->pbuffer = pb;
+    t->importCtx = importCtx;
+    t->ownsImportCtx = ownsImportCtx;
     t->texId = tex;
+    t->pixelFormat = pixelFormat;
     t->hostDraw = hostDraw;
     t->hostRead = hostRead;
     t->hostCtx = ctx;
@@ -457,6 +543,15 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeGlTextureI
     (void)env; (void)clazz;
     NucleusExternalTexture *t = (NucleusExternalTexture *)(uintptr_t)handle;
     return t ? (jint)t->texId : 0;
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativePixelFormat(
+    JNIEnv *env, jclass clazz, jlong handle)
+{
+    (void)env; (void)clazz;
+    NucleusExternalTexture *t = (NucleusExternalTexture *)(uintptr_t)handle;
+    return t ? (jint)t->pixelFormat : NUCLEUS_TEX_FORMAT_RGBA8;
 }
 
 /* TRUE when the import runs the keyed-mutex staging path (tear-free). */
@@ -509,16 +604,22 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeDestroy(
     NucleusExternalTexture *t = (NucleusExternalTexture *)(uintptr_t)handle;
     if (!t) return;
     if (t->pbuffer != EGL_NO_SURFACE) {
-        pEglReleaseTexImage(t->dpy, t->pbuffer, EGL_BACK_BUFFER);
+        EGLSurface previousDraw = pEglGetCurrentSurface2(EGL_DRAW);
+        EGLSurface previousRead = pEglGetCurrentSurface2(EGL_READ);
+        EGLContext previousContext = pEglGetCurrentContext2();
+        if (pEglMakeCurrent2(t->dpy, t->pbuffer, t->pbuffer, t->importCtx)) {
+            pEglReleaseTexImage(t->dpy, t->pbuffer, EGL_BACK_BUFFER);
+            if (deleteTexture && t->texId) pglDeleteTextures(1, &t->texId);
+        }
         /* Never destroy a surface while it's bound on this thread — and put the
          * host's own surface back rather than leaving the thread with nothing
          * current: disposal runs inside a host frame too. */
-        if (pEglGetCurrentSurface2(EGL_DRAW) == t->pbuffer) {
-            restoreCurrent(t->dpy, t->hostDraw, t->hostRead, t->hostCtx);
-        }
+        restoreCurrent(t->dpy, previousDraw, previousRead, previousContext);
         pEglDestroySurface2(t->dpy, t->pbuffer);
     }
-    if (deleteTexture && t->texId) pglDeleteTextures(1, &t->texId);
+    if (t->ownsImportCtx && t->importCtx != EGL_NO_CONTEXT) {
+        pEglDestroyContext2(t->dpy, t->importCtx);
+    }
     if (t->keyedMutex) IDXGIKeyedMutex_Release(t->keyedMutex);
     if (t->copyCtx) ID3D11DeviceContext_Release(t->copyCtx);
     if (t->sharedTexture) ID3D11Texture2D_Release(t->sharedTexture);
@@ -541,6 +642,7 @@ typedef struct {
     HANDLE                  sharedHandle; /* legacy handle — not a real NT handle, never closed */
     int                     widthPx;
     int                     heightPx;
+    DXGI_FORMAT             format;
     /* White RGBA scratch strip for the moving test-pattern bars,
      * NUCLEUS_TEST_BAR_PX * max(width,height) * 4 bytes. */
     unsigned char          *barPixels;
@@ -558,11 +660,9 @@ static void testProducerClear(NucleusTestProducer *p, jint argb) {
     ID3D11DeviceContext_ClearRenderTargetView(p->imCtx, p->rtv, rgba);
 }
 
-JNIEXPORT jlong JNICALL
-Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeTestProducerCreate(
-    JNIEnv *env, jclass clazz, jint widthPx, jint heightPx, jboolean useKeyedMutex)
+static jlong testProducerCreate(
+    jint widthPx, jint heightPx, jboolean useKeyedMutex, DXGI_FORMAT format)
 {
-    (void)env; (void)clazz;
     if (widthPx < 1 || heightPx < 1) return 0;
 
     HMODULE d3dMod = LoadLibraryW(L"d3d11.dll");
@@ -599,7 +699,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeTestProduc
     desc.Height = (UINT)heightPx;
     desc.MipLevels = 1;
     desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Format = format;
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -658,6 +758,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeTestProduc
     p->sharedHandle = shared;
     p->widthPx = (int)widthPx;
     p->heightPx = (int)heightPx;
+    p->format = format;
     int maxDim = widthPx > heightPx ? widthPx : heightPx;
     p->barPixels = (unsigned char *)HeapAlloc(
         GetProcessHeap(), 0, (SIZE_T)NUCLEUS_TEST_BAR_PX * (SIZE_T)maxDim * 4);
@@ -665,6 +766,22 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeTestProduc
         memset(p->barPixels, 0xFF, (SIZE_T)NUCLEUS_TEST_BAR_PX * (SIZE_T)maxDim * 4);
     }
     return (jlong)(uintptr_t)p;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeTestProducerCreate(
+    JNIEnv *env, jclass clazz, jint widthPx, jint heightPx, jboolean useKeyedMutex)
+{
+    (void)env; (void)clazz;
+    return testProducerCreate(widthPx, heightPx, useKeyedMutex, DXGI_FORMAT_R8G8B8A8_UNORM);
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeTestProducerCreateExtended(
+    JNIEnv *env, jclass clazz, jint widthPx, jint heightPx, jboolean useKeyedMutex)
+{
+    (void)env; (void)clazz;
+    return testProducerCreate(widthPx, heightPx, useKeyedMutex, DXGI_FORMAT_R16G16B16A16_FLOAT);
 }
 
 JNIEXPORT jlong JNICALL
@@ -695,6 +812,24 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeTestProduc
     if (p->keyedMutex) IDXGIKeyedMutex_ReleaseSync(p->keyedMutex, 0);
 }
 
+JNIEXPORT void JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeTestProducerFillExtended(
+    JNIEnv *env, jclass clazz, jlong producer,
+    jfloat red, jfloat green, jfloat blue, jfloat alpha)
+{
+    (void)env; (void)clazz;
+    NucleusTestProducer *p = (NucleusTestProducer *)(uintptr_t)producer;
+    if (!p || p->format != DXGI_FORMAT_R16G16B16A16_FLOAT) return;
+    if (p->keyedMutex &&
+        IDXGIKeyedMutex_AcquireSync(p->keyedMutex, 0, 100) != S_OK) {
+        return;
+    }
+    const FLOAT rgba[4] = { red, green, blue, alpha };
+    ID3D11DeviceContext_ClearRenderTargetView(p->imCtx, p->rtv, rgba);
+    ID3D11DeviceContext_Flush(p->imCtx);
+    if (p->keyedMutex) IDXGIKeyedMutex_ReleaseSync(p->keyedMutex, 0);
+}
+
 /* Animated test pattern: [argbBg] background plus a white vertical bar
  * (x follows [tick]) and a white horizontal bar (y follows [tick]) —
  * enough structure for contentScale / filterQuality demos and to make
@@ -705,7 +840,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoTextureBridge_nativeTestProduc
 {
     (void)env; (void)clazz;
     NucleusTestProducer *p = (NucleusTestProducer *)(uintptr_t)producer;
-    if (!p || !p->barPixels) return;
+    if (!p || !p->barPixels || p->format != DXGI_FORMAT_R8G8B8A8_UNORM) return;
     if (p->keyedMutex &&
         IDXGIKeyedMutex_AcquireSync(p->keyedMutex, 0, 100) != S_OK) {
         return; /* consumer stuck on the mutex — drop this frame */

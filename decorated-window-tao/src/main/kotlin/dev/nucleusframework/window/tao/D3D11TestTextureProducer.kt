@@ -27,12 +27,27 @@ public class D3D11TestTextureProducer private constructor(
 ) : AutoCloseable {
     private val lock = Any()
     private var closed = false
+    private var extended = false
 
     /** Clears the shared texture to [argb] and flushes the producer device. */
     public fun fill(argb: Int) {
         synchronized(lock) {
             if (closed) return
             NativeTaoTextureBridge.nativeTestProducerFill(producer, argb)
+        }
+    }
+
+    /** Clears a half-float producer without clamping values to `[0, 1]`. */
+    public fun fillExtended(
+        red: Float,
+        green: Float,
+        blue: Float,
+        alpha: Float,
+    ) {
+        require(extended) { "fillExtended requires a producer created with createExtended" }
+        synchronized(lock) {
+            if (closed) return
+            NativeTaoTextureBridge.nativeTestProducerFillExtended(producer, red, green, blue, alpha)
         }
     }
 
@@ -78,6 +93,33 @@ public class D3D11TestTextureProducer private constructor(
                 producer,
                 nucleusD3D11SharedTextureSource(sharedHandle, widthPx, heightPx),
             )
+        }
+
+        /** Returns a keyed or direct half-float extended-linear producer. */
+        public fun createExtended(
+            widthPx: Int,
+            heightPx: Int,
+            useKeyedMutex: Boolean = true,
+        ): D3D11TestTextureProducer? {
+            if (Platform.Current != Platform.Windows || !NativeTaoTextureBridge.isLoaded) return null
+            val producer =
+                NativeTaoTextureBridge.nativeTestProducerCreateExtended(widthPx, heightPx, useKeyedMutex)
+            if (producer == 0L) return null
+            val sharedHandle = NativeTaoTextureBridge.nativeTestProducerSharedHandle(producer)
+            if (sharedHandle == 0L) {
+                NativeTaoTextureBridge.nativeTestProducerDestroy(producer)
+                return null
+            }
+            return D3D11TestTextureProducer(
+                producer = producer,
+                source =
+                    nucleusD3D11SharedTextureSource(
+                        sharedHandle = sharedHandle,
+                        widthPx = widthPx,
+                        heightPx = heightPx,
+                        colorInfo = TextureColorInfo.EXTENDED_LINEAR_SRGB_PREMULTIPLIED,
+                    ),
+            ).also { it.extended = true }
         }
     }
 }

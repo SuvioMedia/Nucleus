@@ -1,7 +1,10 @@
 package dev.nucleusframework.window.tao.scene
 
 import androidx.compose.runtime.ProvidableCompositionLocal
+import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
+import dev.nucleusframework.window.tao.TextureViewHostCapabilities
+import dev.nucleusframework.window.tao.UnavailableTextureViewHostCapabilitiesState
 import org.jetbrains.skia.DirectContext
 
 /**
@@ -27,6 +30,9 @@ import org.jetbrains.skia.DirectContext
  * Threading: everything here runs on the Tao event-loop thread.
  */
 internal interface TaoWindowsTextureHost {
+    val textureViewHostCapabilities: State<TextureViewHostCapabilities>
+        get() = UnavailableTextureViewHostCapabilitiesState
+
     /**
      * HWND whose EGL trio the import resolves against, or 0 when the surface has
      * none of its own (the tray panel renders through the process-wide headless
