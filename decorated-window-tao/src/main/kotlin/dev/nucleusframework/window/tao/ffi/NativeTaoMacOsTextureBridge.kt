@@ -25,6 +25,9 @@ internal object NativeTaoMacOsTextureBridge {
     /** `MTLPixelFormatRGBA8Unorm` import — Skia `SurfaceColorFormat.RGBA_8888`. */
     const val FORMAT_RGBA8: Int = 1
 
+    /** `MTLPixelFormatRGBA16Float` import — Skia `SurfaceColorFormat.RGBA_F16`. */
+    const val FORMAT_RGBA16_FLOAT: Int = 2
+
     /**
      * Imports an `IOSurfaceRef` as an `id<MTLTexture>` on [devicePtr]
      * (the host's Metal device): the returned texture aliases the producer's
@@ -32,9 +35,10 @@ internal object NativeTaoMacOsTextureBridge {
      * `MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead` so Skia can
      * wrap it via `BackendRenderTarget.makeMetal`.
      *
-     * The surface must be 32-bit `BGRA` or `RGBA` with premultiplied alpha and
-     * exactly [widthPx] × [heightPx] (Metal validates the descriptor against
-     * the plane's dimensions). Returns an opaque handle, or `<= 0` on failure:
+     * The surface must be 32-bit `BGRA` / `RGBA` with premultiplied alpha or
+     * half-float `RGhA` (`kCVPixelFormatType_64RGBAHalf`), and exactly
+     * [widthPx] × [heightPx] (Metal validates the descriptor against the
+     * plane's dimensions). Returns an opaque handle, or `<= 0` on failure:
      * `-1` bad arguments, `-2` unsupported pixel format, `-3` size mismatch,
      * `-4` texture creation failed — including a surface whose memory the
      * device cannot map as `MTLStorageModeShared` — `0` out of memory.
@@ -70,7 +74,7 @@ internal object NativeTaoMacOsTextureBridge {
     @JvmStatic
     external fun nativeTexturePtr(handle: Long): Long
 
-    /** [FORMAT_BGRA8] or [FORMAT_RGBA8] — picks the Skia `SurfaceColorFormat`. */
+    /** One of the `FORMAT_*` constants — picks the Skia `SurfaceColorFormat`. */
     @JvmStatic
     external fun nativePixelFormat(handle: Long): Int
 
@@ -90,6 +94,13 @@ internal object NativeTaoMacOsTextureBridge {
      */
     @JvmStatic
     external fun nativeTestProducerCreate(
+        widthPx: Int,
+        heightPx: Int,
+    ): Long
+
+    /** Creates a half-float `RGhA` IOSurface producer for HDR/EDR tests. */
+    @JvmStatic
+    external fun nativeTestProducerCreateExtended(
         widthPx: Int,
         heightPx: Int,
     ): Long
@@ -115,6 +126,16 @@ internal object NativeTaoMacOsTextureBridge {
     external fun nativeTestProducerFill(
         producer: Long,
         argb: Int,
+    )
+
+    /** Clears a half-float producer without clamping components to `[0, 1]`. */
+    @JvmStatic
+    external fun nativeTestProducerFillExtended(
+        producer: Long,
+        red: Float,
+        green: Float,
+        blue: Float,
+        alpha: Float,
     )
 
     /**

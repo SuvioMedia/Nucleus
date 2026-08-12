@@ -1,7 +1,10 @@
+@file:Suppress("MatchingDeclarationName")
+
 package dev.nucleusframework.window.tao
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -12,6 +15,7 @@ import dev.nucleusframework.core.runtime.Platform
 import dev.nucleusframework.window.tao.ffi.NativeTaoMacOsTextureBridge
 import dev.nucleusframework.window.tao.scene.LocalTaoMetalTextureHost
 import dev.nucleusframework.window.tao.scene.TaoMetalTextureHost
+import dev.nucleusframework.window.tao.scene.skikoRgbaF16SurfaceColorFormat
 import org.jetbrains.skia.BackendRenderTarget
 import org.jetbrains.skia.ColorSpace
 import org.jetbrains.skia.ContentChangeMode
@@ -20,6 +24,53 @@ import org.jetbrains.skia.Rect
 import org.jetbrains.skia.Surface
 import org.jetbrains.skia.SurfaceColorFormat
 import org.jetbrains.skia.SurfaceOrigin
+import java.util.ArrayDeque
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * Raw Metal objects backing the current macOS Tao composition surface.
+ *
+ * A same-process producer may submit its writes through [commandQueue] before
+ * calling [TextureViewController.markFrameAvailable]. Nucleus' Skia context uses
+ * that exact queue, so producer writes and the GPU snapshot performed by
+ * [TextureView] are ordered without a CPU wait or a pixel readback.
+ *
+ * Both pointers are borrowed and valid only while this value remains current in
+ * composition. A producer must stop using them from its `DisposableEffect`.
+ */
+public data class MacMetalTextureHost(
+    /** Borrowed `id<MTLDevice>` pointer. */
+    public val device: Long,
+    /** Borrowed `id<MTLCommandQueue>` pointer used by the enclosing Skia context. */
+    public val commandQueue: Long,
+    /** Borrowed `NSView` pointer used to resolve the current NSScreen/EDR capability. */
+    public val nativeView: Long,
+)
+
+/**
+ * Returns the Metal host of the current macOS Tao composition surface.
+ * Returns null outside a live Metal-backed macOS Tao surface.
+ */
+@Composable
+public fun currentMacMetalTextureHost(): MacMetalTextureHost? {
+    val host = LocalTaoMetalTextureHost.current ?: return null
+    if (
+        Platform.Current != Platform.MacOS ||
+        host.metalDevicePtr == 0L ||
+        host.metalCommandQueuePtr == 0L ||
+        host.nativeViewPtr == 0L
+    ) {
+        return null
+    }
+    return remember(host) {
+        MacMetalTextureHost(
+            device = host.metalDevicePtr,
+            commandQueue = host.metalCommandQueuePtr,
+            nativeView = host.nativeViewPtr,
+        )
+    }
+}
 
 /**
  * macOS implementation of [TextureView]. The producer's `IOSurface` (or
@@ -37,10 +88,12 @@ import org.jetbrains.skia.SurfaceOrigin
  * was drawn — the equivalent of the Windows keyed-mutex staging path.
  *
  * Threading follows the macOS record/replay split: the composable's draw pass
- * runs on the main thread and hops to the render thread that owns the Skia
- * `DirectContext` (idle at that point, see [TaoMetalTextureHost]) for the
- * snapshot. The hop happens once per new producer frame per import, no matter
- * how many [TextureView]s share it.
+ * never waits for the render thread. A new producer stamp schedules its GPU
+ * snapshot on the render thread and the current immutable image is used for
+ * that draw; completion invalidates the draw pass once and publishes the fresh
+ * image on the next frame. This one-frame pipeline is essential during native
+ * live resize, where `nextDrawable()` may temporarily occupy the render thread
+ * while AppKit still needs the main thread to deliver window geometry events.
  */
 @Composable
 internal fun MacTextureView(
@@ -65,19 +118,30 @@ internal fun MacTextureView(
         Box(modifier)
         return
     }
+    val snapshotInvalidation = remember(imported) { mutableLongStateOf(0L) }
+    val invalidateSnapshot =
+        remember(imported) {
+            { snapshotInvalidation.longValue += 1L }
+        }
 
     val srcRect =
         remember(imported) {
             Rect(0f, 0f, imported.widthPx.toFloat(), imported.heightPx.toFloat())
         }
     val sampling = remember(filterQuality) { samplingFor(filterQuality) }
+    val colorPaint = rememberExternalTextureColorPaint(source.colorInfo)
     Box(
         modifier.drawBehind {
+            // Read the completion stamp so an asynchronously prepared snapshot invalidates only
+            // this draw pass. Compose MutableState supports producer-thread writes just like
+            // TextureViewController.frameStamp does.
+            snapshotInvalidation.longValue
             // Snapshot read of the frame stamp: markFrameAvailable()
             // invalidates exactly this draw pass, nothing recomposes.
             val stamp = controller?.frameStamp?.longValue ?: 0L
-            val image = imported.snapshot(controller, stamp) ?: return@drawBehind
-            drawExternalTexture(image, srcRect, contentScale, alignment, sampling)
+            val image =
+                imported.snapshot(controller, stamp, invalidateSnapshot) ?: return@drawBehind
+            drawExternalTexture(image, srcRect, contentScale, alignment, sampling, colorPaint)
         },
     )
 }
@@ -85,19 +149,33 @@ internal fun MacTextureView(
 /**
  * One imported external texture: the native `id<MTLTexture>` mapping plus the
  * Skia objects wrapping it, and the current frame's snapshot. Everything Skia
- * touches lives on [host]'s render thread; the fields are only read/written
- * from the main thread (draw pass, composition, disposal), which the blocking
- * [TaoMetalTextureHost.runOnRenderThread] hops keep ordered.
+ * touches lives on [host]'s render thread. The current immutable image is
+ * published through a volatile reference so the main-thread draw pass never
+ * waits; creation and destruction remain serialized on the owning render
+ * thread.
  */
-private class MacImportedTexture(
+internal class MacImportedTexture(
     val handle: Long,
     val host: TaoMetalTextureHost,
     private val renderTarget: BackendRenderTarget,
     private val surface: Surface,
     val widthPx: Int,
     val heightPx: Int,
+    initialImage: Image,
 ) {
-    private var image: Image? = null
+    @Volatile
+    private var image: Image? = initialImage
+
+    internal val hasSnapshot: Boolean
+        get() = image != null
+
+    @Volatile
+    private var closed: Boolean = false
+
+    private val refreshInFlight = AtomicBoolean(false)
+    private val retiredImages = ArrayDeque<Image>()
+    private val pendingInvalidations = LinkedHashSet<() -> Unit>()
+    private val pendingInvalidationsLock = Any()
 
     /** One snapshot per producer frame per controller — see [FrameStampGate]. */
     private val consumed = FrameStampGate()
@@ -113,32 +191,62 @@ private class MacImportedTexture(
     fun snapshot(
         controller: TextureViewController?,
         stamp: Long,
+        onSnapshotReady: () -> Unit,
     ): Image? {
         val current = image
+        if (closed) return current
         if (current != null && !consumed.isPending(controller, stamp)) return current
-        // Recorded even when the snapshot below fails: a broken GPU state must
-        // not turn every subsequent draw pass into a blocking render-thread hop.
-        // The next producer frame re-arms the retry.
+        if (!consumed.isPending(controller, stamp)) return current
+        synchronized(pendingInvalidationsLock) {
+            if (!closed) pendingInvalidations += onSnapshotReady
+        }
+        // At most one worker may wait for this import's render thread. If a newer producer stamp
+        // arrives meanwhile it remains pending; completion invalidates the draw pass and that
+        // pass schedules the newest stamp next.
+        if (!refreshInFlight.compareAndSet(false, true)) return current
         consumed.markConsumed(controller, stamp)
-        val fresh =
-            host.runOnRenderThread {
-                runCatching {
-                    // The producer writes the wrapped texture behind Skia's
-                    // back, so Skia still believes the surface is unchanged and
-                    // would hand back its cached snapshot (the first frame,
-                    // frozen forever). This is the API for exactly that case:
-                    // it drops the cached image and bumps the generation id.
-                    // RETAIN — the producer's pixels must survive, we only
-                    // invalidate Skia's bookkeeping.
-                    surface.notifyContentWillChange(ContentChangeMode.RETAIN)
-                    surface.makeImageSnapshot()
-                }.getOrNull()?.also { current?.close() }
+        textureSnapshotExecutor.execute {
+            var installed = false
+            var invalidations = emptyList<() -> Unit>()
+            try {
+                host.runOnRenderThread {
+                    if (closed) return@runOnRenderThread
+                    val previous = image
+                    val fresh =
+                        runCatching {
+                            // The producer replaces the wrapped texture contents behind Skia's
+                            // back. DISCARD invalidates Skia's cached snapshot without preserving
+                            // the previous surface contents. RETAIN is wrong for a continuously
+                            // overwritten video buffer: it triggers copy-on-write for every frame
+                            // and leaves a stream of full-size IOSurfaces in the Metal cache.
+                            surface.notifyContentWillChange(ContentChangeMode.DISCARD)
+                            surface.makeImageSnapshot()
+                        }.getOrNull()
+                    if (fresh != null) {
+                        // A picture recorded with the previous image can be replayed immediately
+                        // after this task. Keep that image for one further snapshot generation;
+                        // executor ordering then proves its replay has completed before close.
+                        retiredImages.pollFirst()?.close()
+                        if (previous != null) retiredImages.addLast(previous)
+                        image = fresh
+                        installed = true
+                    }
+                }
+            } finally {
+                invalidations =
+                    synchronized(pendingInvalidationsLock) {
+                        pendingInvalidations.toList().also { pendingInvalidations.clear() }
+                    }
+                refreshInFlight.set(false)
             }
-        if (fresh != null) image = fresh
+            if (installed && !closed) invalidations.forEach { invalidate -> runCatching(invalidate) }
+        }
         return image
     }
 
     fun close() {
+        closed = true
+        synchronized(pendingInvalidationsLock) { pendingInvalidations.clear() }
         // Skia teardown must happen on the context's thread, before the native
         // texture goes. The hop only fails once the render thread is gone — i.e.
         // after the host closed its DirectContext, which already freed these
@@ -147,6 +255,7 @@ private class MacImportedTexture(
         runCatching {
             host.runOnRenderThread {
                 image?.close()
+                while (retiredImages.isNotEmpty()) retiredImages.removeFirst().close()
                 surface.close()
                 renderTarget.close()
             }
@@ -156,6 +265,15 @@ private class MacImportedTexture(
         NativeTaoMacOsTextureBridge.nativeDestroy(handle)
     }
 }
+
+/**
+ * Waiters are deliberately separate from every Metal owner thread: they may block on a surface's
+ * render executor, but never AppKit's event thread. Daemon workers carry no application lifetime.
+ */
+private val textureSnapshotExecutor =
+    Executors.newCachedThreadPool { task ->
+        Thread(task, "TaoTextureSnapshot").apply { isDaemon = true }
+    }
 
 /**
  * The macOS import ledger. Refcounted and keyed by Skia context + source; see
@@ -170,7 +288,7 @@ private val metalTextureImports =
         closeImport = { it.close() },
     )
 
-private fun importTexture(
+internal fun importTexture(
     host: TaoMetalTextureHost,
     source: TextureViewSource,
 ): MacImportedTexture? {
@@ -215,11 +333,18 @@ private fun importTexture(
             NativeTaoMacOsTextureBridge.nativeDestroy(handle)
             return@runOnRenderThread null
         }
+        val pixelFormat = NativeTaoMacOsTextureBridge.nativePixelFormat(handle)
         val colorFormat =
-            if (NativeTaoMacOsTextureBridge.nativePixelFormat(handle) == NativeTaoMacOsTextureBridge.FORMAT_RGBA8) {
-                SurfaceColorFormat.RGBA_8888
+            when (pixelFormat) {
+                NativeTaoMacOsTextureBridge.FORMAT_RGBA8 -> SurfaceColorFormat.RGBA_8888
+                NativeTaoMacOsTextureBridge.FORMAT_RGBA16_FLOAT -> skikoRgbaF16SurfaceColorFormat
+                else -> SurfaceColorFormat.BGRA_8888
+            }
+        val colorSpace =
+            if (pixelFormat == NativeTaoMacOsTextureBridge.FORMAT_RGBA16_FLOAT) {
+                ColorSpace.sRGBLinear
             } else {
-                SurfaceColorFormat.BGRA_8888
+                ColorSpace.sRGB
             }
         val renderTarget = BackendRenderTarget.makeMetal(widthPx, heightPx, texturePtr)
         val surface =
@@ -229,7 +354,7 @@ private fun importTexture(
                     rt = renderTarget,
                     origin = SurfaceOrigin.TOP_LEFT,
                     colorFormat = colorFormat,
-                    colorSpace = ColorSpace.sRGB,
+                    colorSpace = colorSpace,
                 )
             }.getOrNull()
         if (surface == null) {
@@ -237,6 +362,23 @@ private fun importTexture(
             NativeTaoMacOsTextureBridge.nativeDestroy(handle)
             return@runOnRenderThread null
         }
-        MacImportedTexture(handle, host, renderTarget, surface, widthPx, heightPx)
+        // A TextureViewStream changes source as its producer rotates buffers. If a fresh
+        // import starts without an image, the first draw of every producer frame is empty
+        // until the asynchronous refresh finishes, which presents as black flicker. Seed
+        // the import while it is already on the Metal render thread so replacing one stream
+        // frame with the next always has visible pixels. Later updates of the same source
+        // retain the non-blocking snapshot path above.
+        val initialImage =
+            runCatching {
+                surface.notifyContentWillChange(ContentChangeMode.DISCARD)
+                surface.makeImageSnapshot()
+            }.getOrNull()
+        if (initialImage == null) {
+            surface.close()
+            renderTarget.close()
+            NativeTaoMacOsTextureBridge.nativeDestroy(handle)
+            return@runOnRenderThread null
+        }
+        MacImportedTexture(handle, host, renderTarget, surface, widthPx, heightPx, initialImage)
     }
 }

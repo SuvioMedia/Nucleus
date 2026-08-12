@@ -27,17 +27,32 @@ internal object BytecodeAnalyzer {
     /**
      * Analyzes a single JAR file.
      */
-    fun analyzeJar(jarPath: File): AnalysisResult = analyzeJarInternal(jarPath, collectReferences = false).toResult()
+    fun analyzeJar(
+        jarPath: File,
+        excludedTypePrefixes: Set<String> = emptySet(),
+        excludedResourceGlobs: Set<String> = emptySet(),
+    ): AnalysisResult {
+        val exclusions = StaticMetadataExclusions(excludedTypePrefixes, excludedResourceGlobs)
+        return analyzeJarInternal(jarPath, collectReferences = false, exclusions.typeMatcher)
+            .toResult()
+            .excluding(exclusions)
+    }
 
     /**
      * Analyzes a directory of compiled .class files (e.g. build/classes/kotlin/jvm/main).
      */
-    fun analyzeClassDir(dir: File): AnalysisResult =
-        analyzeClassDirInternal(
+    fun analyzeClassDir(
+        dir: File,
+        excludedTypePrefixes: Set<String> = emptySet(),
+    ): AnalysisResult {
+        val exclusions = StaticMetadataExclusions(excludedTypePrefixes, emptySet())
+        return analyzeClassDirInternal(
             dir = dir,
             collectReferences = false,
             collectProjectFacts = false,
-        ).toResult()
+            excludedTypes = exclusions.typeMatcher,
+        ).toResult().excluding(exclusions)
+    }
 
     /**
      * Analyzes a classpath that may contain both JARs and class directories.
@@ -55,11 +70,14 @@ internal object BytecodeAnalyzer {
         projectClassDirs: Collection<File> = emptyList(),
         detectOrphanProjectClasses: Boolean = false,
         reflectionForProjectClasses: Boolean = false,
+        excludedTypePrefixes: Set<String> = emptySet(),
+        excludedResourceGlobs: Set<String> = emptySet(),
     ): AnalysisResult {
+        val exclusions = StaticMetadataExclusions(excludedTypePrefixes, excludedResourceGlobs)
         val needProjectFacts = detectOrphanProjectClasses || reflectionForProjectClasses
         val needReferences = detectOrphanProjectClasses // all-project path does not need refs
         if (!needProjectFacts) {
-            return analyzeClasspathLegacy(files)
+            return analyzeClasspathLegacy(files, exclusions)
         }
 
         val projectDirSet =
@@ -87,6 +105,7 @@ internal object BytecodeAnalyzer {
                             dir = file,
                             collectReferences = needReferences,
                             collectProjectFacts = isProject,
+                            excludedTypes = exclusions.typeMatcher,
                         )
                     merged += partial.toResult()
                     if (needReferences) {
@@ -101,7 +120,12 @@ internal object BytecodeAnalyzer {
                     }
                 }
                 file.isFile && file.name.endsWith(".jar") && file.exists() -> {
-                    val partial = analyzeJarInternal(file, collectReferences = needReferences)
+                    val partial =
+                        analyzeJarInternal(
+                            jarPath = file,
+                            collectReferences = needReferences,
+                            excludedTypes = exclusions.typeMatcher,
+                        )
                     merged += partial.toResult()
                     if (needReferences) {
                         allReferenced += partial.referencedTypes
@@ -118,6 +142,7 @@ internal object BytecodeAnalyzer {
                     dir = projectDir,
                     collectReferences = true,
                     collectProjectFacts = true,
+                    excludedTypes = exclusions.typeMatcher,
                 )
             merged += partial.toResult()
             allReferenced += partial.referencedTypes
@@ -137,7 +162,7 @@ internal object BytecodeAnalyzer {
                 else -> emptySet()
             }
 
-        return merged.copy(projectClassEntries = projectEntries)
+        return merged.copy(projectClassEntries = projectEntries).excluding(exclusions)
     }
 
     /**
@@ -151,17 +176,31 @@ internal object BytecodeAnalyzer {
         return merged
     }
 
-    private fun analyzeClasspathLegacy(files: Iterable<File>): AnalysisResult {
+    private fun analyzeClasspathLegacy(
+        files: Iterable<File>,
+        exclusions: StaticMetadataExclusions,
+    ): AnalysisResult {
         var merged = AnalysisResult()
         for (file in files) {
             merged = merged +
                 when {
-                    file.isDirectory -> analyzeClassDir(file)
-                    file.isFile && file.name.endsWith(".jar") -> analyzeJar(file)
+                    file.isDirectory ->
+                        analyzeClassDirInternal(
+                            dir = file,
+                            collectReferences = false,
+                            collectProjectFacts = false,
+                            excludedTypes = exclusions.typeMatcher,
+                        ).toResult()
+                    file.isFile && file.name.endsWith(".jar") ->
+                        analyzeJarInternal(
+                            jarPath = file,
+                            collectReferences = false,
+                            excludedTypes = exclusions.typeMatcher,
+                        ).toResult()
                     else -> continue
                 }
         }
-        return merged
+        return merged.excluding(exclusions)
     }
 
     private data class PartialScan(
@@ -184,6 +223,7 @@ internal object BytecodeAnalyzer {
     private fun analyzeJarInternal(
         jarPath: File,
         collectReferences: Boolean,
+        excludedTypes: TypePrefixMatcher = TypePrefixMatcher(emptySet()),
     ): PartialScan {
         if (!jarPath.exists() || !jarPath.name.endsWith(".jar")) {
             return PartialScan()
@@ -209,14 +249,15 @@ internal object BytecodeAnalyzer {
                 for (entry in jar.entries()) {
                     if (!entry.name.endsWith(".class") || entry.name.startsWith("META-INF/")) continue
 
+                    val internalName = entry.name.removeSuffix(".class")
+                    if (excludedTypes.matches(internalName.replace('/', '.'))) continue
+
                     val classBytes =
                         try {
                             jar.getInputStream(entry).use { it.readBytes() }
                         } catch (_: Exception) {
                             continue
                         }
-
-                    val internalName = entry.name.removeSuffix(".class")
                     classBytesIndex[internalName] = classBytes
 
                     try {
@@ -268,6 +309,7 @@ internal object BytecodeAnalyzer {
         dir: File,
         collectReferences: Boolean,
         collectProjectFacts: Boolean,
+        excludedTypes: TypePrefixMatcher = TypePrefixMatcher(emptySet()),
     ): PartialScan {
         if (!dir.exists() || !dir.isDirectory) return PartialScan()
 
@@ -307,19 +349,20 @@ internal object BytecodeAnalyzer {
             .walkTopDown()
             .filter { it.isFile && it.extension == "class" }
             .forEach { classFile ->
-                val classBytes =
-                    try {
-                        classFile.readBytes()
-                    } catch (_: Exception) {
-                        return@forEach
-                    }
-
                 val relativePath =
                     classFile
                         .relativeTo(dir)
                         .path
                         .removeSuffix(".class")
                         .replace('\\', '/')
+                if (excludedTypes.matches(relativePath.replace('/', '.'))) return@forEach
+
+                val classBytes =
+                    try {
+                        classFile.readBytes()
+                    } catch (_: Exception) {
+                        return@forEach
+                    }
                 classBytesIndex[relativePath] = classBytes
 
                 try {
