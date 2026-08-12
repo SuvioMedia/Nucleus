@@ -24,12 +24,19 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.tao.GlobalLayoutDirection
 import dev.nucleusframework.window.tao.TaoEventCode
 import dev.nucleusframework.window.tao.TaoModifierMask
 import dev.nucleusframework.window.tao.TaoPointerScrollEvent
 import dev.nucleusframework.window.tao.TaoTouchEvent
 import dev.nucleusframework.window.tao.TaoWindow
+import dev.nucleusframework.window.tao.TextureViewHostCapabilities
+import dev.nucleusframework.window.tao.TextureViewHostDynamicRange
+import dev.nucleusframework.window.tao.TextureViewHostGenerationTracker
+import dev.nucleusframework.window.tao.TextureViewHostPixelFormat
+import dev.nucleusframework.window.tao.TextureViewHostPresentationState
+import dev.nucleusframework.window.tao.WindowsTextureViewProducerInfo
 import dev.nucleusframework.window.tao.event.ProvideTaoWindowsScrollConfig
 import dev.nucleusframework.window.tao.event.TaoSyntheticMouseWheelEvent
 import dev.nucleusframework.window.tao.event.TaoWheelPinchZoom
@@ -45,6 +52,7 @@ import dev.nucleusframework.window.tao.hasWindowsTextureImports
 import dev.nucleusframework.window.tao.popup.TaoPopupHostWindows
 import dev.nucleusframework.window.tao.popup.TaoPopupSceneLayerWindows
 import dev.nucleusframework.window.tao.releaseWindowsTextureImports
+import dev.nucleusframework.window.tao.textureViewPresentedFrameMarker
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -91,6 +99,7 @@ internal class TaoComposeSceneHostWindows(
     // Fully borderless overlay (`DecoratedWindow(undecorated = true)`): no
     // Compose CSD stroke and no DWM caption/border/shadow contour.
     private val borderlessChrome: Boolean = false,
+    internal val dynamicRangeMode: WindowDynamicRangeMode = WindowDynamicRangeMode.STANDARD,
 ) : AbstractTaoComposeSceneHost() {
     /**
      * IME preedit / commit routing (#558).
@@ -185,6 +194,11 @@ internal class TaoComposeSceneHostWindows(
      * `remember` on every recomposition of the window root.
      */
     val windowsTextureHostState: MutableState<TaoWindowsTextureHost?> = mutableStateOf(null)
+    private val textureViewHostCapabilitiesState: MutableState<TextureViewHostCapabilities> =
+        mutableStateOf(TextureViewHostCapabilities.UNAVAILABLE)
+    private val textureViewHostGeneration = TextureViewHostGenerationTracker()
+    private var extendedSceneActive: Boolean = false
+    private var standardPresentedFrameCount: Long = 0L
 
     private var sceneBundle: TaoSceneBundle? = null
     private val scene: ComposeScene? get() = sceneBundle?.scene
@@ -299,6 +313,7 @@ internal class TaoComposeSceneHostWindows(
     // ANGLE's eglSwapBuffers paces fine inline — the input starvation that
     // motivated the old WGL swap thread never applied to this backend.
 
+    @Suppress("LongMethod")
     fun attach() {
         check(NativeTaoBridge.isLoaded && NativeTaoGlBridge.isLoaded && NativeTaoWindowsDecoBridge.isLoaded) {
             "Tao Windows native libraries not loaded"
@@ -332,7 +347,11 @@ internal class TaoComposeSceneHostWindows(
         // ANGLE/D3D11 (WARP-capable on RDP/VMs) is the only Windows backend.
         // Skia needs an EGL-assembled GL interface — the default makeGL()
         // resolves entry points via WGL/opengl32 and fails under ANGLE.
-        val handle = NativeTaoGlBridge.nativeAttach(hwnd)
+        val handle =
+            NativeTaoGlBridge.nativeAttachWithDynamicRange(
+                hwnd = hwnd,
+                extendedDynamicRange = dynamicRangeMode == WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE,
+            )
         require(handle != 0L) {
             "Failed to create ANGLE render context for HWND " +
                 "(libEGL/libGLESv2 missing or Direct3D 11 unavailable)"
@@ -345,6 +364,7 @@ internal class TaoComposeSceneHostWindows(
                 null
             }
         attachmentHandle = handle
+        extendedSceneActive = NativeTaoGlBridge.nativeUsesExtendedScene(handle)
         directContext =
             (ctx ?: error("Failed to create Skia DirectContext on the ANGLE ES context")).also {
                 // Bound the GPU resource cache. Each frame wraps the default
@@ -358,6 +378,7 @@ internal class TaoComposeSceneHostWindows(
                 it.resourceCacheLimit = RESOURCE_CACHE_LIMIT_BYTES
             }
         attachedHostCount.incrementAndGet()
+        updateTextureViewHostCapabilities()
 
         @OptIn(ExperimentalComposeUiApi::class)
         val dndManager =
@@ -1223,15 +1244,25 @@ internal class TaoComposeSceneHostWindows(
                 sampleCnt = 0,
                 stencilBits = 8,
                 fbId = 0,
-                fbFormat = FramebufferFormat.GR_GL_RGBA8,
+                fbFormat =
+                    if (extendedSceneActive) {
+                        FramebufferFormat.GR_GL_RGBA16F
+                    } else {
+                        FramebufferFormat.GR_GL_RGBA8
+                    },
             )
         val surface =
             Surface.makeFromBackendRenderTarget(
                 context = ctx,
                 rt = rt,
                 origin = SurfaceOrigin.BOTTOM_LEFT,
-                colorFormat = SurfaceColorFormat.RGBA_8888,
-                colorSpace = ColorSpace.sRGB,
+                colorFormat =
+                    if (extendedSceneActive) {
+                        skikoRgbaF16SurfaceColorFormat
+                    } else {
+                        SurfaceColorFormat.RGBA_8888
+                    },
+                colorSpace = if (extendedSceneActive) ColorSpace.sRGBLinear else ColorSpace.sRGB,
             ) ?: run {
                 rt.close()
                 return
@@ -1307,7 +1338,9 @@ internal class TaoComposeSceneHostWindows(
         // Present inline. nativePresent defensively re-binds the host's
         // window surface first (a popup renderer may have left its pbuffer
         // current) and eglSwapBuffers paces on the display refresh.
-        NativeTaoGlBridge.nativePresent(attachmentHandle)
+        val presented = NativeTaoGlBridge.nativePresent(attachmentHandle)
+        if (presented && !extendedSceneActive) ++standardPresentedFrameCount
+        updateTextureViewHostCapabilities()
 
         // Backstop for a continuation that landed after the post-record drain
         // (a worker slower than the record). Costs it the jitter threshold
@@ -1470,6 +1503,7 @@ internal class TaoComposeSceneHostWindows(
         val outer = this
         windowsTextureHostState.value =
             object : TaoWindowsTextureHost {
+                override val textureViewHostCapabilities = textureViewHostCapabilitiesState
                 override val hostHwnd: Long get() = outer.hwnd
                 override val directContext: DirectContext = ctx
 
@@ -1486,6 +1520,61 @@ internal class TaoComposeSceneHostWindows(
                     }
                 }
             }
+    }
+
+    private fun updateTextureViewHostCapabilities() {
+        val handle = attachmentHandle
+        if (handle == 0L) {
+            textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
+            return
+        }
+        val extended = extendedSceneActive
+        val nativePresentedFrames =
+            if (extended) {
+                NativeTaoGlBridge.nativePresentedFrameCount(handle)
+            } else {
+                standardPresentedFrameCount
+            }
+        val presentedFrames = textureViewPresentedFrameMarker(nativePresentedFrames)
+        val sdrWhite = if (extended) NativeTaoGlBridge.nativeSdrWhiteLevelNits(handle) else 80f
+        val maximum = if (extended) NativeTaoGlBridge.nativeMaximumLuminanceNits(handle) else 80f
+        textureViewHostCapabilitiesState.value =
+            TextureViewHostCapabilities(
+                requestedMode = dynamicRangeMode,
+                actualDynamicRange =
+                    if (extended && NativeTaoGlBridge.nativeIsHdrOutput(handle)) {
+                        TextureViewHostDynamicRange.HDR
+                    } else {
+                        TextureViewHostDynamicRange.SDR
+                    },
+                presentationState =
+                    if (presentedFrames > 0L) {
+                        TextureViewHostPresentationState.PRESENTED
+                    } else {
+                        TextureViewHostPresentationState.PENDING
+                    },
+                sdrWhiteLevelNits = sdrWhite,
+                maximumLuminanceNits = maximum,
+                headroom = if (extended) NativeTaoGlBridge.nativeHeadroom(handle) else 1f,
+                generation =
+                    textureViewHostGeneration.resolve(
+                        surfaceToken = handle,
+                        nativeGeneration =
+                            if (extended) {
+                                NativeTaoGlBridge.nativeOutputGeneration(handle)
+                            } else {
+                                1L
+                            },
+                    ),
+                presentedFrameCount = presentedFrames,
+                outputPixelFormat =
+                    if (extended) {
+                        TextureViewHostPixelFormat.RGBA16_FLOAT_SCRGB
+                    } else {
+                        TextureViewHostPixelFormat.RGBA8_SRGB
+                    },
+                producerInfo = WindowsTextureViewProducerInfo(NativeTaoGlBridge.nativeAdapterLuid(handle)),
+            )
     }
 
     fun popupHost(): TaoPopupHostWindows? {
@@ -1903,6 +1992,8 @@ internal class TaoComposeSceneHostWindows(
             // must go before the context they were adopted into.
             directContext?.let(::releaseWindowsTextureImports)
             windowsTextureHostState.value = null
+            textureViewHostCapabilitiesState.value = TextureViewHostCapabilities.UNAVAILABLE
+            textureViewHostGeneration.reset()
             directContext?.close()
             directContext = null
             attachedHostCount.decrementAndGet()
@@ -1910,6 +2001,8 @@ internal class TaoComposeSceneHostWindows(
         if (attachmentHandle != 0L) {
             NativeTaoGlBridge.nativeDetach(attachmentHandle)
             attachmentHandle = 0L
+            extendedSceneActive = false
+            standardPresentedFrameCount = 0L
         }
         if (hwnd != 0L) {
             if (dev.nucleusframework.window.tao.ffi.NativeTaoWindowsDndBridge.isLoaded) {

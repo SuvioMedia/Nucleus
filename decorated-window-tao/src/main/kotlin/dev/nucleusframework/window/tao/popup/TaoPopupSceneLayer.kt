@@ -164,6 +164,8 @@ internal class TaoPopupSceneLayer(
     private var metalTextureHost: TaoMetalTextureHost? =
         object : TaoMetalTextureHost {
             override val metalDevicePtr: Long = NativeMetalBridge.nativeDevicePtr(attachmentHandle)
+            override val metalCommandQueuePtr: Long = NativeMetalBridge.nativeQueuePtr(attachmentHandle)
+            override val nativeViewPtr: Long = NativeMetalBridge.nativeViewPtr(attachmentHandle)
             override val directContext: DirectContext = this@TaoPopupSceneLayer.directContext
 
             override fun <T> runOnRenderThread(block: () -> T): T = host.runOnRenderThread(block)

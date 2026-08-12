@@ -1,7 +1,10 @@
 package dev.nucleusframework.window.tao.scene
 
 import androidx.compose.runtime.ProvidableCompositionLocal
+import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
+import dev.nucleusframework.window.tao.TextureViewHostCapabilities
+import dev.nucleusframework.window.tao.UnavailableTextureViewHostCapabilitiesState
 import dev.nucleusframework.window.tao.ffi.NativeMetalBridge
 import org.jetbrains.skia.DirectContext
 
@@ -23,8 +26,17 @@ import org.jetbrains.skia.DirectContext
  * [runOnRenderThread] (Skia's Metal context is thread-affine).
  */
 internal interface TaoMetalTextureHost {
+    val textureViewHostCapabilities: State<TextureViewHostCapabilities>
+        get() = UnavailableTextureViewHostCapabilitiesState
+
     /** `id<MTLDevice>` [directContext] renders with. */
     val metalDevicePtr: Long
+
+    /** `id<MTLCommandQueue>` used by [directContext]. */
+    val metalCommandQueuePtr: Long
+
+    /** Borrowed `NSView` pointer whose screen owns this composition surface. */
+    val nativeViewPtr: Long
 
     /** Skia context of this surface; only touch it inside [runOnRenderThread]. */
     val directContext: DirectContext
@@ -62,14 +74,21 @@ internal class MetalTextureHostCache {
     fun get(
         attachmentHandle: Long,
         directContext: DirectContext?,
-        create: (metalDevicePtr: Long, context: DirectContext) -> TaoMetalTextureHost,
+        create: (
+            metalDevicePtr: Long,
+            metalCommandQueuePtr: Long,
+            nativeViewPtr: Long,
+            context: DirectContext,
+        ) -> TaoMetalTextureHost,
     ): TaoMetalTextureHost? {
         cached?.let { return it }
         val context = directContext ?: return null
         if (attachmentHandle == 0L) return null
         val device = NativeMetalBridge.nativeDevicePtr(attachmentHandle)
-        if (device == 0L) return null
-        return create(device, context).also { cached = it }
+        val commandQueue = NativeMetalBridge.nativeQueuePtr(attachmentHandle)
+        val nativeView = NativeMetalBridge.nativeViewPtr(attachmentHandle)
+        if (device == 0L || commandQueue == 0L || nativeView == 0L) return null
+        return create(device, commandQueue, nativeView, context).also { cached = it }
     }
 
     /** Drops the cached instance — called when the surface closes its context. */

@@ -11,6 +11,7 @@ import androidx.compose.ui.window.rememberWindowState
 import dev.nucleusframework.application.internal.TaoDecoratedWindowAdapter
 import dev.nucleusframework.window.AwtDecoratedWindowScope
 import dev.nucleusframework.window.DecoratedWindowState
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.DecoratedWindow as AwtDecoratedWindow
 
 /**
@@ -18,6 +19,178 @@ import dev.nucleusframework.window.DecoratedWindow as AwtDecoratedWindow
  * [NucleusWindow] usable on any backend; reach for `window.unsafe.*` only when
  * you genuinely need backend-specific behaviour.
  */
+@Suppress("FunctionNaming", "LongParameterList")
+@Composable
+public fun NucleusApplicationScope.DecoratedWindow(
+    onCloseRequest: () -> Unit,
+    state: WindowState = rememberWindowState(),
+    visible: Boolean = true,
+    title: String = "",
+    icon: Painter? = null,
+    resizable: Boolean = true,
+    enabled: Boolean = true,
+    focusable: Boolean = true,
+    alwaysOnTop: Boolean = false,
+    undecorated: Boolean = false,
+    popupFor: NucleusWindow? = null,
+    nativePopupLayers: Boolean = false,
+    nativeContextMenu: Boolean = false,
+    hiddenFromDock: Boolean = false,
+    minimumSize: DpSize? = null,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
+    transparent: Boolean = false,
+    clickThrough: Boolean = false,
+    visibleOnAllWorkspaces: Boolean = false,
+    forceX11: Boolean = false,
+    alwaysOnBottom: Boolean = false,
+    content: @Composable NucleusDecoratedWindowScope.() -> Unit,
+) {
+    DecoratedWindow(
+        onCloseRequest = onCloseRequest,
+        state = state,
+        visible = visible,
+        title = title,
+        icon = icon,
+        resizable = resizable,
+        enabled = enabled,
+        focusable = focusable,
+        alwaysOnTop = alwaysOnTop,
+        undecorated = undecorated,
+        popupFor = popupFor,
+        nativePopupLayers = nativePopupLayers,
+        nativeContextMenu = nativeContextMenu,
+        hiddenFromDock = hiddenFromDock,
+        minimumSize = minimumSize,
+        onPreviewKeyEvent = onPreviewKeyEvent,
+        onKeyEvent = onKeyEvent,
+        transparent = transparent,
+        clickThrough = clickThrough,
+        visibleOnAllWorkspaces = visibleOnAllWorkspaces,
+        forceX11 = forceX11,
+        alwaysOnBottom = alwaysOnBottom,
+        dynamicRangeMode = WindowDynamicRangeMode.STANDARD,
+        content = content,
+    )
+}
+
+/** Deprecated binary-compatible forwarding overload retained for one fork release. */
+@Deprecated(
+    message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
+    replaceWith =
+        ReplaceWith(
+            "DecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
+)
+@Suppress("FunctionNaming", "LongParameterList")
+@Composable
+public fun NucleusApplicationScope.DecoratedWindow(
+    onCloseRequest: () -> Unit,
+    state: WindowState = rememberWindowState(),
+    visible: Boolean = true,
+    title: String = "",
+    icon: Painter? = null,
+    resizable: Boolean = true,
+    enabled: Boolean = true,
+    focusable: Boolean = true,
+    alwaysOnTop: Boolean = false,
+    undecorated: Boolean = false,
+    popupFor: NucleusWindow? = null,
+    nativePopupLayers: Boolean = false,
+    hiddenFromDock: Boolean = false,
+    macOSExtendedDynamicRange: Boolean,
+    minimumSize: DpSize? = null,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
+    content: @Composable NucleusDecoratedWindowScope.() -> Unit,
+) {
+    DecoratedWindow(
+        onCloseRequest = onCloseRequest,
+        state = state,
+        visible = visible,
+        title = title,
+        icon = icon,
+        resizable = resizable,
+        enabled = enabled,
+        focusable = focusable,
+        alwaysOnTop = alwaysOnTop,
+        undecorated = undecorated,
+        popupFor = popupFor,
+        nativePopupLayers = nativePopupLayers,
+        hiddenFromDock = hiddenFromDock,
+        minimumSize = minimumSize,
+        onPreviewKeyEvent = onPreviewKeyEvent,
+        onKeyEvent = onKeyEvent,
+        dynamicRangeMode =
+            if (macOSExtendedDynamicRange) {
+                WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE
+            } else {
+                WindowDynamicRangeMode.STANDARD
+            },
+        content = content,
+    )
+}
+
+/** Deprecated binary-compatible forwarding overload retained for one fork release. */
+@Deprecated(
+    message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
+    replaceWith =
+        ReplaceWith(
+            "DecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
+)
+@Suppress("FunctionNaming", "LongParameterList")
+@Composable
+public fun DecoratedWindow(
+    onCloseRequest: () -> Unit,
+    state: WindowState = rememberWindowState(),
+    visible: Boolean = true,
+    title: String = "",
+    icon: Painter? = null,
+    resizable: Boolean = true,
+    enabled: Boolean = true,
+    focusable: Boolean = true,
+    alwaysOnTop: Boolean = false,
+    undecorated: Boolean = false,
+    popupFor: NucleusWindow? = null,
+    nativePopupLayers: Boolean = false,
+    hiddenFromDock: Boolean = false,
+    macOSExtendedDynamicRange: Boolean,
+    minimumSize: DpSize? = null,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
+    content: @Composable NucleusDecoratedWindowScope.() -> Unit,
+) {
+    DecoratedWindow(
+        onCloseRequest = onCloseRequest,
+        state = state,
+        visible = visible,
+        title = title,
+        icon = icon,
+        resizable = resizable,
+        enabled = enabled,
+        focusable = focusable,
+        alwaysOnTop = alwaysOnTop,
+        undecorated = undecorated,
+        popupFor = popupFor,
+        nativePopupLayers = nativePopupLayers,
+        hiddenFromDock = hiddenFromDock,
+        minimumSize = minimumSize,
+        onPreviewKeyEvent = onPreviewKeyEvent,
+        onKeyEvent = onKeyEvent,
+        dynamicRangeMode =
+            if (macOSExtendedDynamicRange) {
+                WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE
+            } else {
+                WindowDynamicRangeMode.STANDARD
+            },
+        content = content,
+    )
+}
+
+/** Backend-agnostic decorated window with an explicit output dynamic-range policy. */
 @Suppress("FunctionNaming", "LongParameterList")
 @Composable
 public fun NucleusApplicationScope.DecoratedWindow(
@@ -94,6 +267,7 @@ public fun NucleusApplicationScope.DecoratedWindow(
     // desktop widgets. Mutually exclusive with [alwaysOnTop] — last one set
     // wins. Reactive. Honoured by the Tao backend; the AWT backend ignores it.
     alwaysOnBottom: Boolean = false,
+    dynamicRangeMode: WindowDynamicRangeMode,
     content: @Composable NucleusDecoratedWindowScope.() -> Unit,
 ) {
     when (this) {
@@ -152,6 +326,7 @@ public fun NucleusApplicationScope.DecoratedWindow(
                 nativePopupLayers = nativePopupLayers,
                 nativeContextMenu = nativeContextMenu,
                 hiddenFromDock = hiddenFromDock,
+                dynamicRangeMode = dynamicRangeMode,
                 minimumSize = minimumSize,
                 onPreviewKeyEvent = onPreviewKeyEvent,
                 onKeyEvent = onKeyEvent,
@@ -197,7 +372,7 @@ public fun DecoratedWindow(
     alwaysOnBottom: Boolean = false,
     content: @Composable NucleusDecoratedWindowScope.() -> Unit,
 ) {
-    LocalNucleusApplicationScope.current.DecoratedWindow(
+    DecoratedWindow(
         onCloseRequest = onCloseRequest,
         state = state,
         visible = visible,
@@ -220,6 +395,64 @@ public fun DecoratedWindow(
         visibleOnAllWorkspaces = visibleOnAllWorkspaces,
         forceX11 = forceX11,
         alwaysOnBottom = alwaysOnBottom,
+        dynamicRangeMode = WindowDynamicRangeMode.STANDARD,
+        content = content,
+    )
+}
+
+/** Receiver-less decorated window with an explicit output dynamic-range policy. */
+@Suppress("FunctionNaming", "LongParameterList")
+@Composable
+public fun DecoratedWindow(
+    onCloseRequest: () -> Unit,
+    state: WindowState = rememberWindowState(),
+    visible: Boolean = true,
+    title: String = "",
+    icon: Painter? = null,
+    resizable: Boolean = true,
+    enabled: Boolean = true,
+    focusable: Boolean = true,
+    alwaysOnTop: Boolean = false,
+    undecorated: Boolean = false,
+    popupFor: NucleusWindow? = null,
+    nativePopupLayers: Boolean = false,
+    nativeContextMenu: Boolean = false,
+    hiddenFromDock: Boolean = false,
+    minimumSize: DpSize? = null,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
+    transparent: Boolean = false,
+    clickThrough: Boolean = false,
+    visibleOnAllWorkspaces: Boolean = false,
+    forceX11: Boolean = false,
+    alwaysOnBottom: Boolean = false,
+    dynamicRangeMode: WindowDynamicRangeMode,
+    content: @Composable NucleusDecoratedWindowScope.() -> Unit,
+) {
+    LocalNucleusApplicationScope.current.DecoratedWindow(
+        onCloseRequest = onCloseRequest,
+        state = state,
+        visible = visible,
+        title = title,
+        icon = icon,
+        resizable = resizable,
+        enabled = enabled,
+        focusable = focusable,
+        alwaysOnTop = alwaysOnTop,
+        undecorated = undecorated,
+        popupFor = popupFor,
+        nativePopupLayers = nativePopupLayers,
+        nativeContextMenu = nativeContextMenu,
+        hiddenFromDock = hiddenFromDock,
+        transparent = transparent,
+        clickThrough = clickThrough,
+        visibleOnAllWorkspaces = visibleOnAllWorkspaces,
+        forceX11 = forceX11,
+        alwaysOnBottom = alwaysOnBottom,
+        dynamicRangeMode = dynamicRangeMode,
+        minimumSize = minimumSize,
+        onPreviewKeyEvent = onPreviewKeyEvent,
+        onKeyEvent = onKeyEvent,
         content = content,
     )
 }

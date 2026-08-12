@@ -316,6 +316,14 @@ public final class dev/nucleusframework/window/WindowControlsSideKt {
 	public static final fun getLocalWindowControlsSide ()Landroidx/compose/runtime/ProvidableCompositionLocal;
 }
 
+public final class dev/nucleusframework/window/WindowDynamicRangeMode : java/lang/Enum {
+	public static final field EXTENDED_IF_AVAILABLE Ldev/nucleusframework/window/WindowDynamicRangeMode;
+	public static final field STANDARD Ldev/nucleusframework/window/WindowDynamicRangeMode;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Ldev/nucleusframework/window/WindowDynamicRangeMode;
+	public static fun values ()[Ldev/nucleusframework/window/WindowDynamicRangeMode;
+}
+
 public final class dev/nucleusframework/window/icons/linux/gnome/CloseDarkKt {
 	public static final fun getCloseDark (Ldev/nucleusframework/window/icons/linux/gnome/GnomeControlButtonsIcons;)Landroidx/compose/ui/graphics/vector/ImageVector;
 }

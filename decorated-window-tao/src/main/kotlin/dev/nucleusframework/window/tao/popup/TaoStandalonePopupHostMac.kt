@@ -189,9 +189,11 @@ internal class TaoStandalonePopupHostMac : StandalonePopupHost {
 
     private fun metalTextureHost(): TaoMetalTextureHost? {
         val outer = this
-        return metalTextureHostCache.get(attachmentHandle, directContext) { device, ctx ->
+        return metalTextureHostCache.get(attachmentHandle, directContext) { device, commandQueue, nativeView, ctx ->
             object : TaoMetalTextureHost {
                 override val metalDevicePtr: Long = device
+                override val metalCommandQueuePtr: Long = commandQueue
+                override val nativeViewPtr: Long = nativeView
                 override val directContext: DirectContext = ctx
 
                 override fun <T> runOnRenderThread(block: () -> T): T = outer.runOnRenderThread(block)

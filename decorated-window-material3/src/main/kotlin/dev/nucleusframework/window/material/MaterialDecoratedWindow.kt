@@ -15,6 +15,7 @@ import dev.nucleusframework.application.NucleusDecoratedWindowScope
 import dev.nucleusframework.window.AwtDecoratedWindowScope
 import dev.nucleusframework.window.DecoratedWindow
 import dev.nucleusframework.window.NucleusDecoratedWindowTheme
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.styling.TitleBarStyle
 import kotlin.internal.LowPriorityInOverloadResolution
 import dev.nucleusframework.application.DecoratedWindow as NucleusDecoratedWindow
@@ -96,6 +97,117 @@ public fun NucleusApplicationScope.MaterialDecoratedWindow(
     enabled: Boolean = true,
     focusable: Boolean = true,
     alwaysOnTop: Boolean = false,
+    nativePopupLayers: Boolean = false,
+    nativeContextMenu: Boolean = false,
+    hiddenFromDock: Boolean = false,
+    minimumSize: DpSize? = null,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
+    titleBarStyle: TitleBarStyle? = null,
+    undecorated: Boolean = false,
+    transparent: Boolean = false,
+    clickThrough: Boolean = false,
+    visibleOnAllWorkspaces: Boolean = false,
+    forceX11: Boolean = false,
+    content: @Composable NucleusDecoratedWindowScope.() -> Unit,
+) {
+    @Suppress("DEPRECATION")
+    MaterialDecoratedWindow(
+        onCloseRequest = onCloseRequest,
+        state = state,
+        visible = visible,
+        title = title,
+        icon = icon,
+        resizable = resizable,
+        enabled = enabled,
+        focusable = focusable,
+        alwaysOnTop = alwaysOnTop,
+        nativePopupLayers = nativePopupLayers,
+        nativeContextMenu = nativeContextMenu,
+        hiddenFromDock = hiddenFromDock,
+        minimumSize = minimumSize,
+        onPreviewKeyEvent = onPreviewKeyEvent,
+        onKeyEvent = onKeyEvent,
+        dynamicRangeMode = WindowDynamicRangeMode.STANDARD,
+        titleBarStyle = titleBarStyle,
+        undecorated = undecorated,
+        transparent = transparent,
+        clickThrough = clickThrough,
+        visibleOnAllWorkspaces = visibleOnAllWorkspaces,
+        forceX11 = forceX11,
+        content = content,
+    )
+}
+
+/** Deprecated binary-compatible forwarding overload retained for one fork release. */
+@Deprecated(
+    message = "Use dynamicRangeMode = WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE.",
+    replaceWith =
+        ReplaceWith(
+            "MaterialDecoratedWindow(onCloseRequest = onCloseRequest, dynamicRangeMode = " +
+                "WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE, content = content)",
+        ),
+)
+@Suppress("FunctionNaming", "LongParameterList")
+@Composable
+public fun NucleusApplicationScope.MaterialDecoratedWindow(
+    onCloseRequest: () -> Unit,
+    state: WindowState = rememberWindowState(),
+    visible: Boolean = true,
+    title: String = "",
+    icon: Painter? = null,
+    resizable: Boolean = true,
+    enabled: Boolean = true,
+    focusable: Boolean = true,
+    alwaysOnTop: Boolean = false,
+    nativePopupLayers: Boolean = false,
+    hiddenFromDock: Boolean = false,
+    macOSExtendedDynamicRange: Boolean,
+    minimumSize: DpSize? = null,
+    onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
+    onKeyEvent: (KeyEvent) -> Boolean = { false },
+    titleBarStyle: TitleBarStyle? = null,
+    content: @Composable NucleusDecoratedWindowScope.() -> Unit,
+) {
+    MaterialDecoratedWindow(
+        onCloseRequest = onCloseRequest,
+        state = state,
+        visible = visible,
+        title = title,
+        icon = icon,
+        resizable = resizable,
+        enabled = enabled,
+        focusable = focusable,
+        alwaysOnTop = alwaysOnTop,
+        nativePopupLayers = nativePopupLayers,
+        hiddenFromDock = hiddenFromDock,
+        minimumSize = minimumSize,
+        onPreviewKeyEvent = onPreviewKeyEvent,
+        onKeyEvent = onKeyEvent,
+        dynamicRangeMode =
+            if (macOSExtendedDynamicRange) {
+                WindowDynamicRangeMode.EXTENDED_IF_AVAILABLE
+            } else {
+                WindowDynamicRangeMode.STANDARD
+            },
+        titleBarStyle = titleBarStyle,
+        content = content,
+    )
+}
+
+/** Material 3 wrapper with an explicit cross-platform output dynamic-range policy. */
+@Suppress("FunctionNaming", "LongParameterList")
+@Composable
+public fun NucleusApplicationScope.MaterialDecoratedWindow(
+    onCloseRequest: () -> Unit,
+    state: WindowState = rememberWindowState(),
+    visible: Boolean = true,
+    title: String = "",
+    icon: Painter? = null,
+    resizable: Boolean = true,
+    enabled: Boolean = true,
+    focusable: Boolean = true,
+    alwaysOnTop: Boolean = false,
     // Materialise Compose Popup layers as native transparent windows
     // (NSPanel / WS_POPUP HWND / Tao popup window on Linux) so menus can
     // extend past the window bounds. Honoured by the Tao backend; ignored by AWT.
@@ -111,6 +223,7 @@ public fun NucleusApplicationScope.MaterialDecoratedWindow(
     minimumSize: DpSize? = null,
     onPreviewKeyEvent: (KeyEvent) -> Boolean = { false },
     onKeyEvent: (KeyEvent) -> Boolean = { false },
+    dynamicRangeMode: WindowDynamicRangeMode,
     titleBarStyle: TitleBarStyle? = null,
     // Fully borderless window (no macOS traffic lights, no CSD outline) — for
     // overlay/ghost windows. Tao backend only.
@@ -164,6 +277,7 @@ public fun NucleusApplicationScope.MaterialDecoratedWindow(
             nativePopupLayers = nativePopupLayers,
             nativeContextMenu = nativeContextMenu,
             hiddenFromDock = hiddenFromDock,
+            dynamicRangeMode = dynamicRangeMode,
             minimumSize = minimumSize,
             onPreviewKeyEvent = onPreviewKeyEvent,
             onKeyEvent = onKeyEvent,

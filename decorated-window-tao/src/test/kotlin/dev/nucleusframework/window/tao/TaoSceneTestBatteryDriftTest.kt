@@ -48,6 +48,7 @@ class TaoSceneTestBatteryDriftTest {
             Win32WheelDeltaTest::class.java,
             MacOsWheelDeltaTest::class.java,
             TaoWheelPinchZoomTest::class.java,
+            TextureViewStreamControllerTest::class.java,
             TaoWindowScrollTest::class.java,
             TaoWindowResizableTest::class.java,
             WindowWrapContentTest::class.java,

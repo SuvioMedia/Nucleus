@@ -74,6 +74,7 @@ internal object ChromeReviewHeadfulCases {
             windowsBackdropSurvivesCancelableClose(),
             windowsBackdropPrepareOnRequestClose(),
             windowBackgroundAndTitleBarClearColor(),
+            MacTitleBarHeadfulCases.doubleClickZoomsAndRestores(),
             noWindowDragBlocksAncestorDragArea(),
             hideBarZerosControlsInsetsInFullscreen(),
             fullscreenToggleVisualCapture(),

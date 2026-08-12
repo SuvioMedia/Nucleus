@@ -22,6 +22,7 @@ import dev.nucleusframework.application.TaoNucleusWindow
 import dev.nucleusframework.application.contextmenu.NativeContextMenuProvider
 import dev.nucleusframework.window.DecoratedWindowState
 import dev.nucleusframework.window.LocalTitleBarInfo
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.tao.LocalTaoCompositionLocalContextBridge
 import dev.nucleusframework.window.tao.LocalTaoWindow
 import dev.nucleusframework.window.tao.TaoDecoratedWindowScope
@@ -57,6 +58,7 @@ internal object TaoDecoratedWindowAdapter {
         nativePopupLayers: Boolean,
         nativeContextMenu: Boolean,
         hiddenFromDock: Boolean,
+        dynamicRangeMode: WindowDynamicRangeMode,
         minimumSize: DpSize?,
         onPreviewKeyEvent: (KeyEvent) -> Boolean,
         onKeyEvent: (KeyEvent) -> Boolean,
@@ -101,6 +103,7 @@ internal object TaoDecoratedWindowAdapter {
                 popupFor = popupFor?.unsafe?.taoWindow,
                 nativePopupLayers = nativePopupLayers,
                 hiddenFromDock = hiddenFromDock,
+                dynamicRangeMode = dynamicRangeMode,
                 onPreviewKeyEvent = onPreviewKeyEvent,
                 onKeyEvent = onKeyEvent,
                 // Initial bridge: present from this window's own scene's FIRST
