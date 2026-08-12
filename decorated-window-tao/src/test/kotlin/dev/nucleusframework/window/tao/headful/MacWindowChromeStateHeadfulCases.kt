@@ -49,6 +49,7 @@ internal object MacWindowChromeStateHeadfulCases {
         listOf(
             overlayDetachKeepsWindowChromeState(),
             setFocusableDoesNotLeakWindowRetains(),
+            MacFullscreenChromeHeadfulCase.create(isMac),
             fullscreenWithLiveNativeViewDoesNotFreeze(),
             nativeViewTracksFullscreenRoundTrip(),
             renderThreadHopStaysCheap(),
@@ -556,5 +557,6 @@ internal object MacWindowChromeStateHeadfulCases {
     private const val FS_RESTORE_TOLERANCE_PX = 64
     private const val FS_SETTLE_MS = 1_200L
     private const val TRACK_TOLERANCE_PX = 8
+    private const val OVERLAY_OFFSET_TOLERANCE_DP = 0.5f
     private const val POST_FS_RESIZE_DELTA_DP = 120.0
 }

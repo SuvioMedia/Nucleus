@@ -21,6 +21,7 @@ set "DECO_SRC=%SCRIPT_DIR%nucleus_tao_windows_deco.c"
 
 set "GL_SRC=%SCRIPT_DIR%nucleus_tao_gl.c"
 set "TEX_SRC=%SCRIPT_DIR%nucleus_tao_texture.c"
+set "HDR_SCENE_SRC=%SCRIPT_DIR%nucleus_tao_hdr_scene.cpp"
 set "DND_SRC=%SCRIPT_DIR%nucleus_tao_dnd.c"
 set "NV_SRC=%SCRIPT_DIR%nucleus_tao_windows_native_view.c"
 set "OVERLAY_SRC=%SCRIPT_DIR%nucleus_tao_windows_overlay.c"
@@ -142,9 +143,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-cl /LD /O1 /GS- /nologo ^
+cl /LD /O1 /GS- /GR- /EHs-c- /nologo ^
     /I"%JNI_INCLUDE%" /I"%JNI_INCLUDE_WIN32%" /I"%ANGLE_INC%" ^
-    "%GL_SRC%" "%TEX_SRC%" ^
+    "%GL_SRC%" "%TEX_SRC%" "%HDR_SCENE_SRC%" ^
     /Fe:"%OUT_DIR_X64%\nucleus_tao_gl.dll" ^
     /link /NODEFAULTLIB /ENTRY:DllMain gdi32.lib user32.lib kernel32.lib
 if errorlevel 1 (
@@ -206,9 +207,9 @@ if errorlevel 1 (
     goto :clear_cache
 )
 
-cl /LD /O1 /GS- /nologo ^
+cl /LD /O1 /GS- /GR- /EHs-c- /nologo ^
     /I"%JNI_INCLUDE%" /I"%JNI_INCLUDE_WIN32%" /I"%ANGLE_INC%" ^
-    "%GL_SRC%" "%TEX_SRC%" ^
+    "%GL_SRC%" "%TEX_SRC%" "%HDR_SCENE_SRC%" ^
     /Fe:"%OUT_DIR_ARM64%\nucleus_tao_gl.dll" ^
     /link /ENTRY:DllMain gdi32.lib user32.lib kernel32.lib
 if errorlevel 1 (

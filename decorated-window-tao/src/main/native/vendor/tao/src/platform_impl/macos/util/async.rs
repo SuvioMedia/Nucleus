@@ -153,6 +153,19 @@ pub unsafe fn toggle_full_screen_async(
     // + 1` back to normal in order for `toggleFullScreen` to do
     // anything
     ns_window.setLevel(0);
+    // PATCH(nucleus): AutoHideToolbar only joins the fullscreen menu-bar
+    // rollover when the toolbar exists before toggleFullScreen: begins.
+    // The optional selector is supplied by NucleusTaoMetal; deployments with
+    // an older helper simply skip it.
+    if not_fullscreen {
+      let supports_nucleus_fullscreen_controls: bool = msg_send![
+        &*ns_window,
+        respondsToSelector: sel!(nucleusTaoPrepareFullscreenControls)
+      ];
+      if supports_nucleus_fullscreen_controls {
+        let _: () = msg_send![&*ns_window, nucleusTaoPrepareFullscreenControls];
+      }
+    }
     ns_window.toggleFullScreen(None);
   });
 }

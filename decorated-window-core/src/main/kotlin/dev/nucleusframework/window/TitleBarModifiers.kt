@@ -6,7 +6,7 @@ import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.platform.debugInspectorInfo
 
 /**
- * Opt-in to the new fullscreen-controls behavior on macOS.
+ * Opt-in to the fullscreen title-bar overlay.
  *
  * When applied to a [TitleBar], the title bar slides as a top overlay during
  * native fullscreen instead of staying anchored at the top of the layout.
@@ -14,11 +14,12 @@ import androidx.compose.ui.platform.debugInspectorInfo
  * - **JBR**: drives `apple.awt.newFullScreenControls` and AppKit traffic-light
  *   recentering via JBR's CustomTitleBar.
  * - **JNI**: hooks the AppKit menu bar monitor to animate the offset.
- * - **Tao**: reserved tag — tao's native fullscreen already animates the
- *   menu bar separately; this flag is read by tao's TitleBar for symmetry
- *   with the AWT backends.
- *
- * No-op on Linux and Windows.
+ * - **Tao**: on macOS 26+, AppKit reveals its native window title and original
+ *   traffic lights together with the menu bar. Custom Compose title-bar content
+ *   is shown only outside fullscreen. Windows and Linux use a Compose top-edge
+ *   overlay; earlier macOS versions keep the legacy controls.
+ * - **JNI**: uses the platform title-bar implementation; Windows and Linux
+ *   render the same top-edge overlay while macOS follows its menu bar.
  */
 public fun Modifier.newFullscreenControls(newControls: Boolean = true): Modifier =
     this then

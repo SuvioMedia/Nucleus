@@ -31,22 +31,23 @@
 
 #import <Metal/Metal.h>
 #import <IOSurface/IOSurface.h>
+#import <CoreVideo/CoreVideo.h>
 #import <jni.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-// Pixel layouts the import accepts. Skia samples the wrapped texture as
-// premultiplied 8-bit RGBA; these are the two byte orders that map onto
-// MTLPixelFormatBGRA8Unorm / MTLPixelFormatRGBA8Unorm (Kotlin turns the value
-// into the matching SurfaceColorFormat).
+// Pixel layouts the import accepts. Kotlin turns these values into the matching
+// Skia SurfaceColorFormat; the half-float path intentionally keeps extended
+// linear values outside [0, 1] intact.
 #define NUCLEUS_TEX_FORMAT_BGRA8 0
 #define NUCLEUS_TEX_FORMAT_RGBA8 1
+#define NUCLEUS_TEX_FORMAT_RGBA16_FLOAT 2
 
 // Staged failure codes returned by the import entry points (negative so the
 // Kotlin side can log the failing stage; 0 means "out of memory").
 #define NUCLEUS_TEX_ERR_ARGS        (-1) /* null device / surface, bad size    */
-#define NUCLEUS_TEX_ERR_FORMAT      (-2) /* not a BGRA8 / RGBA8 surface        */
+#define NUCLEUS_TEX_ERR_FORMAT      (-2) /* unsupported RGB surface format     */
 #define NUCLEUS_TEX_ERR_SIZE        (-3) /* size does not match the surface    */
 #define NUCLEUS_TEX_ERR_TEXTURE     (-4) /* newTextureWithDescriptor failed    */
 #define NUCLEUS_TEX_ERR_USAGE       (-5) /* texture not usable as render target*/
@@ -93,6 +94,8 @@ static int nucleusFormatOfIOSurface(IOSurfaceRef surface) {
     switch (IOSurfaceGetPixelFormat(surface)) {
         case 'BGRA': return NUCLEUS_TEX_FORMAT_BGRA8;
         case 'RGBA': return NUCLEUS_TEX_FORMAT_RGBA8;
+        case kCVPixelFormatType_64RGBAHalf:
+            return NUCLEUS_TEX_FORMAT_RGBA16_FLOAT;
         default:     return -1;
     }
 }
@@ -105,14 +108,22 @@ static int nucleusFormatOfMetalPixelFormat(MTLPixelFormat format) {
         case MTLPixelFormatRGBA8Unorm:
         case MTLPixelFormatRGBA8Unorm_sRGB:
             return NUCLEUS_TEX_FORMAT_RGBA8;
+        case MTLPixelFormatRGBA16Float:
+            return NUCLEUS_TEX_FORMAT_RGBA16_FLOAT;
         default:
             return -1;
     }
 }
 
 static MTLPixelFormat nucleusMetalPixelFormat(int format) {
-    return format == NUCLEUS_TEX_FORMAT_RGBA8 ? MTLPixelFormatRGBA8Unorm
-                                              : MTLPixelFormatBGRA8Unorm;
+    switch (format) {
+        case NUCLEUS_TEX_FORMAT_RGBA8:
+            return MTLPixelFormatRGBA8Unorm;
+        case NUCLEUS_TEX_FORMAT_RGBA16_FLOAT:
+            return MTLPixelFormatRGBA16Float;
+        default:
+            return MTLPixelFormatBGRA8Unorm;
+    }
 }
 
 // Creates a texture on `device` aliasing `plane` of `surface`.
@@ -260,23 +271,31 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoMacOsTextureBridge_nativeDestr
 /*  Metal test producer (demos / smoke tests)                          */
 /* ================================================================== */
 
-// Clears the producer texture to `argb` (premultiplied, as Skia samples it)
-// and returns the command buffer so the caller can append more work.
-static id<MTLCommandBuffer> nucleusProducerClear(NucleusTaoTestProducer *p, jint argb) {
-    double a = (double)((argb >> 24) & 0xFF) / 255.0;
+// Clears the producer texture and returns the command buffer so the caller can
+// append more work. Float textures preserve extended values above SDR white.
+static id<MTLCommandBuffer> nucleusProducerClearComponents(
+        NucleusTaoTestProducer *p, double red, double green, double blue,
+        double alpha) {
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture     = p->texture;
     pass.colorAttachments[0].loadAction  = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    pass.colorAttachments[0].clearColor  = MTLClearColorMake(
-        a * (double)((argb >> 16) & 0xFF) / 255.0,
-        a * (double)((argb >>  8) & 0xFF) / 255.0,
-        a * (double)( argb        & 0xFF) / 255.0,
-        a);
+    pass.colorAttachments[0].clearColor  = MTLClearColorMake(red, green, blue, alpha);
     id<MTLCommandBuffer> cb = [p->queue commandBuffer];
     id<MTLRenderCommandEncoder> encoder = [cb renderCommandEncoderWithDescriptor:pass];
     [encoder endEncoding];
     return cb;
+}
+
+// Clears the producer texture to `argb` (premultiplied, as Skia samples it).
+static id<MTLCommandBuffer> nucleusProducerClear(NucleusTaoTestProducer *p, jint argb) {
+    double a = (double)((argb >> 24) & 0xFF) / 255.0;
+    return nucleusProducerClearComponents(
+        p,
+        a * (double)((argb >> 16) & 0xFF) / 255.0,
+        a * (double)((argb >>  8) & 0xFF) / 255.0,
+        a * (double)( argb        & 0xFF) / 255.0,
+        a);
 }
 
 // Commits and waits: the producer contract is that a frame is fully written
@@ -287,10 +306,7 @@ static void nucleusProducerSubmit(id<MTLCommandBuffer> cb) {
     [cb waitUntilCompleted];
 }
 
-JNIEXPORT jlong JNICALL
-Java_dev_nucleusframework_window_tao_ffi_NativeTaoMacOsTextureBridge_nativeTestProducerCreate(
-        JNIEnv *env, jclass clazz, jint widthPx, jint heightPx) {
-    (void)env; (void)clazz;
+static jlong nucleusTestProducerCreate(jint widthPx, jint heightPx, BOOL extended) {
     if (widthPx < 1 || heightPx < 1) return 0;
 
     // Own device + queue, distinct from the host's: the IOSurface is the only
@@ -303,14 +319,16 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoMacOsTextureBridge_nativeTestP
     NSDictionary *props = @{
         (__bridge NSString *)kIOSurfaceWidth:            @(widthPx),
         (__bridge NSString *)kIOSurfaceHeight:           @(heightPx),
-        (__bridge NSString *)kIOSurfaceBytesPerElement:  @(4),
-        (__bridge NSString *)kIOSurfacePixelFormat:      @((int)'BGRA'),
+        (__bridge NSString *)kIOSurfaceBytesPerElement:  @(extended ? 8 : 4),
+        (__bridge NSString *)kIOSurfacePixelFormat:
+            @(extended ? (int)kCVPixelFormatType_64RGBAHalf : (int)'BGRA'),
     };
     IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
     if (surface == NULL) return 0;
 
     id<MTLTexture> texture = nucleusTextureFromIOSurface(
-        device, surface, 0, widthPx, heightPx, MTLPixelFormatBGRA8Unorm);
+        device, surface, 0, widthPx, heightPx,
+        extended ? MTLPixelFormatRGBA16Float : MTLPixelFormatBGRA8Unorm);
     if (texture == nil) {
         CFRelease(surface);
         return 0;
@@ -318,30 +336,33 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoMacOsTextureBridge_nativeTestP
 
     // Opaque-white source for the pattern bars. Shared storage so the pixels
     // can be uploaded once from the CPU; only blits read it afterwards.
-    MTLTextureDescriptor *whiteDesc =
-        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                          width:(NSUInteger)widthPx
-                                                         height:(NSUInteger)heightPx
-                                                      mipmapped:NO];
-    whiteDesc.usage       = MTLTextureUsageShaderRead;
-    whiteDesc.storageMode = MTLStorageModeShared;
-    id<MTLTexture> white = [device newTextureWithDescriptor:whiteDesc];
-    if (white == nil) {
-        CFRelease(surface);
-        return 0;
+    id<MTLTexture> white = nil;
+    if (!extended) {
+        MTLTextureDescriptor *whiteDesc =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                              width:(NSUInteger)widthPx
+                                                             height:(NSUInteger)heightPx
+                                                          mipmapped:NO];
+        whiteDesc.usage       = MTLTextureUsageShaderRead;
+        whiteDesc.storageMode = MTLStorageModeShared;
+        white = [device newTextureWithDescriptor:whiteDesc];
+        if (white == nil) {
+            CFRelease(surface);
+            return 0;
+        }
+        size_t rowBytes = (size_t)widthPx * 4;
+        unsigned char *pixels = (unsigned char *)malloc(rowBytes * (size_t)heightPx);
+        if (pixels == NULL) {
+            CFRelease(surface);
+            return 0;
+        }
+        memset(pixels, 0xFF, rowBytes * (size_t)heightPx);
+        [white replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)widthPx, (NSUInteger)heightPx)
+                 mipmapLevel:0
+                   withBytes:pixels
+                 bytesPerRow:rowBytes];
+        free(pixels);
     }
-    size_t rowBytes = (size_t)widthPx * 4;
-    unsigned char *pixels = (unsigned char *)malloc(rowBytes * (size_t)heightPx);
-    if (pixels == NULL) {
-        CFRelease(surface);
-        return 0;
-    }
-    memset(pixels, 0xFF, rowBytes * (size_t)heightPx);
-    [white replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)widthPx, (NSUInteger)heightPx)
-             mipmapLevel:0
-               withBytes:pixels
-             bytesPerRow:rowBytes];
-    free(pixels);
 
     NucleusTaoTestProducer *p = (NucleusTaoTestProducer *)
         calloc(1, sizeof(NucleusTaoTestProducer));
@@ -357,6 +378,20 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoMacOsTextureBridge_nativeTestP
     p->widthPx  = (int)widthPx;
     p->heightPx = (int)heightPx;
     return (jlong)(uintptr_t)p;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoMacOsTextureBridge_nativeTestProducerCreate(
+        JNIEnv *env, jclass clazz, jint widthPx, jint heightPx) {
+    (void)env; (void)clazz;
+    return nucleusTestProducerCreate(widthPx, heightPx, NO);
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoMacOsTextureBridge_nativeTestProducerCreateExtended(
+        JNIEnv *env, jclass clazz, jint widthPx, jint heightPx) {
+    (void)env; (void)clazz;
+    return nucleusTestProducerCreate(widthPx, heightPx, YES);
 }
 
 JNIEXPORT jlong JNICALL
@@ -394,6 +429,17 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoMacOsTextureBridge_nativeTestP
     nucleusProducerSubmit(nucleusProducerClear(p, argb));
 }
 
+JNIEXPORT void JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeTaoMacOsTextureBridge_nativeTestProducerFillExtended(
+        JNIEnv *env, jclass clazz, jlong producer, jfloat red, jfloat green,
+        jfloat blue, jfloat alpha) {
+    (void)env; (void)clazz;
+    if (producer == 0) return;
+    NucleusTaoTestProducer *p = PRODUCER_OF(producer);
+    nucleusProducerSubmit(
+        nucleusProducerClearComponents(p, red, green, blue, alpha));
+}
+
 /* Animated test pattern: `argbBg` background plus a white vertical bar (x
  * follows `tick`) and a white horizontal bar (y follows `tick`) — enough
  * structure for the contentScale / filterQuality demos and to make tearing
@@ -405,6 +451,10 @@ Java_dev_nucleusframework_window_tao_ffi_NativeTaoMacOsTextureBridge_nativeTestP
     (void)env; (void)clazz;
     if (producer == 0) return;
     NucleusTaoTestProducer *p = PRODUCER_OF(producer);
+    if (p->white == nil) {
+        nucleusProducerSubmit(nucleusProducerClear(p, argbBg));
+        return;
+    }
     int barW = p->widthPx  < NUCLEUS_TEST_BAR_PX ? p->widthPx  : NUCLEUS_TEST_BAR_PX;
     int barH = p->heightPx < NUCLEUS_TEST_BAR_PX ? p->heightPx : NUCLEUS_TEST_BAR_PX;
     int barX = (tick * 2) % (p->widthPx  - barW + 1);

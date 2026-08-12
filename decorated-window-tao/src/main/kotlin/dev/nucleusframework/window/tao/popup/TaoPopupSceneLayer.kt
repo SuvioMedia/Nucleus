@@ -7,6 +7,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.isSpecified
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.input.pointer.PointerEventType
@@ -47,7 +49,7 @@ import org.jetbrains.skia.DirectContext
  * **Three failure modes from the post-mortem are explicitly avoided:**
  *  1. *Render-driving model*: the layer registers a per-frame callback
  *     with [TaoPopupHost], so the host's `onRedrawRequested` pump fires
- *     [renderFrame] every parent frame — the inner scene is never starved.
+ *     [recordSurface] every parent frame — the inner scene is never starved.
  *  2. *Measurement chicken-and-egg*: the inner [CanvasLayersComposeScene]
  *     is constructed with `size = host.workAreaSize` (non-zero from the
  *     start) so Compose's `RootMeasurePolicy` measures the popup content
@@ -64,13 +66,10 @@ import org.jetbrains.skia.DirectContext
  *     what makes `MaterialTheme.colorScheme` etc. flow into the popup
  *     content automatically.
  *
- * Phase 3 deliberately omits:
- *  - `setOutsidePointerEventListener` — outside-click dismissal lands
- *    in Phase 4 (NSEvent local monitor on the parent window).
- *  - `setKeyEventListener` — key forwarding lands in Phase 4 too.
- *  - `scrimColor` — would need a third surface (full-window-sized
- *    overlay between main scene and popup). Not relevant for context
- *    menus / dropdowns.
+ * Pointer/key forwarding and outside-click dismissal are provided by the
+ * native panel. A non-transparent [scrimColor] adds a paint-only panel below
+ * the popup, covering the host window's content. AppKit owns this solid-color
+ * surface and keeps it sized to the host, so it needs no extra Metal context.
  *
  * Threading: every method must run on the macOS main thread.
  */
@@ -166,6 +165,8 @@ internal class TaoPopupSceneLayer(
     private var metalTextureHost: TaoMetalTextureHost? =
         object : TaoMetalTextureHost {
             override val metalDevicePtr: Long = NativeMetalBridge.nativeDevicePtr(attachmentHandle)
+            override val metalCommandQueuePtr: Long = NativeMetalBridge.nativeQueuePtr(attachmentHandle)
+            override val nativeViewPtr: Long = NativeMetalBridge.nativeViewPtr(attachmentHandle)
             override val directContext: DirectContext = this@TaoPopupSceneLayer.directContext
 
             override fun <T> runOnRenderThread(block: () -> T): T = host.runOnRenderThread(block)
@@ -395,7 +396,13 @@ internal class TaoPopupSceneLayer(
     override var scrimColor: Color?
         get() = _scrimColor
         set(value) {
-            _scrimColor = value // TODO Phase 4: third surface
+            if (disposed || _scrimColor == value) return
+            _scrimColor = value
+            PopupNativeBridge.nativeSetScrimColor(
+                panelHandle,
+                value?.takeIf { it.isSpecified }?.toArgb() ?: 0,
+            )
+            host.requestRedraw()
         }
 
     override var focusable: Boolean

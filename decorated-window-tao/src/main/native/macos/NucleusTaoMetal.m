@@ -112,6 +112,28 @@ static const char kTaoTransparentModeKey = 16;
 // tiling hover menu ("Move & Resize" / "Fill & Arrange") despite the window
 // being kept non-movable at rest (issue #497).
 static const char kTaoZoomResponderKey = 19;
+// FullscreenOverlayHost's Compose-side title-bar geometry. Kept separate from
+// the menu-bar offset so AppKit events and Compose's reveal animation can move
+// independently while the replacement traffic lights follow their sum.
+static const char kTaoFullscreenOverlayHeightKey = 20;
+static const char kTaoFullscreenOverlayOffsetKey = 21;
+// Fullscreen-only NSToolbar installed for newFullscreenControls. Its presence,
+// together with NSApplicationPresentationAutoHideToolbar, lets AppKit own the
+// combined menu/title-bar rollover region.
+static const char kTaoManagedFullscreenToolbarKey = 25;
+// NSWindowToolbarStyle value to restore when leaving fullscreen.
+static const char kTaoPreviousToolbarStyleKey = 26;
+// Preserve references while AppKit detaches its original title-bar hierarchy.
+// The controls are never copied or manually reparented.
+static const char kTaoNativeFullscreenButtonsKey = 27;
+// Strong reference for NSToolbar's weak delegate. The delegate contributes a
+// real toolbar item so AppKit extends its auto-hide hover region over the
+// custom fullscreen controls instead of treating the toolbar as empty.
+static const char kTaoFullscreenToolbarDelegateKey = 28;
+// Toolbar that was attached before entering fullscreen. The native coupled
+// toolbar is deliberately dedicated so user/toolkit toolbar delegates and
+// item layouts are never mutated.
+static const char kTaoPreviousFullscreenToolbarKey = 29;
 
 #define TAO_TRANSPARENCY_OFF     0
 #define TAO_TRANSPARENCY_REGIONS 1
@@ -138,6 +160,148 @@ static BOOL isTahoeOrLater(void) {
         result = [[NSProcessInfo processInfo] isOperatingSystemAtLeastVersion:v];
     });
     return result;
+}
+
+static void removeButtonConstraints(NSWindow *window);
+static void prepareNativeFullscreenToolbar(NSWindow *window);
+
+// Tao queries these optional selectors without linking to the Metal helper.
+@interface NSWindow (NucleusTaoFullscreenControls)
+- (BOOL)nucleusTaoUsesNewFullscreenControls;
+- (void)nucleusTaoPrepareFullscreenControls;
+@end
+
+@implementation NSWindow (NucleusTaoFullscreenControls)
+- (BOOL)nucleusTaoUsesNewFullscreenControls {
+    NSNumber *enabled = objc_getAssociatedObject(self, &kTaoNewFullscreenControlsKey);
+    return isTahoeOrLater() && enabled != nil && enabled.boolValue;
+}
+- (void)nucleusTaoPrepareFullscreenControls {
+    prepareNativeFullscreenToolbar(self);
+}
+@end
+
+static BOOL usesNativeFullscreenToolbar(NSWindow *window) {
+    return window != nil && [window nucleusTaoUsesNewFullscreenControls];
+}
+
+static NSButton *nativeFullscreenButton(NSWindow *window, NSWindowButton type) {
+    NSButton *button = [window standardWindowButton:type];
+    if (button != nil) return button;
+    NSArray<NSButton *> *stored =
+        objc_getAssociatedObject(window, &kTaoNativeFullscreenButtonsKey);
+    NSUInteger index = (NSUInteger)type;
+    return index < stored.count ? stored[index] : nil;
+}
+
+// A concrete toolbar item makes the entire detached toolbar participate in
+// AppKit's menu-bar rollover. It has no independent animation or hit target.
+// AppKit draws the title and owns the real window buttons around it.
+static NSToolbarItemIdentifier const kTaoFullscreenChromeItemIdentifier =
+    @"NucleusTaoFullscreenChrome";
+
+@interface NucleusTaoFullscreenToolbarDelegate : NSObject <NSToolbarDelegate>
+@end
+
+@implementation NucleusTaoFullscreenToolbarDelegate
+- (NSArray<NSToolbarItemIdentifier> *)toolbarAllowedItemIdentifiers:(NSToolbar *)toolbar {
+    return @[ kTaoFullscreenChromeItemIdentifier ];
+}
+- (NSArray<NSToolbarItemIdentifier> *)toolbarDefaultItemIdentifiers:(NSToolbar *)toolbar {
+    return @[ kTaoFullscreenChromeItemIdentifier ];
+}
+- (NSToolbarItem *)toolbar:(NSToolbar *)toolbar
+    itemForItemIdentifier:(NSToolbarItemIdentifier)itemIdentifier
+willBeInsertedIntoToolbar:(BOOL)flag {
+    if (![itemIdentifier isEqualToString:kTaoFullscreenChromeItemIdentifier]) return nil;
+    NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:itemIdentifier];
+    NSView *spacer = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 1, 24)];
+    spacer.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [spacer.widthAnchor constraintEqualToConstant:1.0],
+        [spacer.heightAnchor constraintEqualToConstant:24.0],
+    ]];
+    item.view = spacer;
+    item.bordered = NO;
+    return item;
+}
+@end
+
+static void prepareNativeFullscreenToolbar(NSWindow *window) {
+    if (!usesNativeFullscreenToolbar(window)) return;
+    if (objc_getAssociatedObject(window, &kTaoManagedFullscreenToolbarKey) != nil) return;
+
+    removeButtonConstraints(window);
+    NSView *passthrough = objc_getAssociatedObject(window, &kTaoPassthroughViewKey);
+    passthrough.hidden = YES;
+
+    NSButton *close = [window standardWindowButton:NSWindowCloseButton];
+    NSButton *mini = [window standardWindowButton:NSWindowMiniaturizeButton];
+    NSButton *zoom = [window standardWindowButton:NSWindowZoomButton];
+    if (close != nil && mini != nil && zoom != nil) {
+        objc_setAssociatedObject(window, &kTaoNativeFullscreenButtonsKey,
+                                 @[ close, mini, zoom ],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        for (NSButton *button in @[ close, mini, zoom ]) button.hidden = NO;
+    }
+
+    if (@available(macOS 11.0, *)) {
+        objc_setAssociatedObject(window, &kTaoPreviousToolbarStyleKey,
+                                 @((NSInteger)window.toolbarStyle),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        window.toolbarStyle = NSWindowToolbarStyleUnifiedCompact;
+    }
+    objc_setAssociatedObject(window, &kTaoPreviousFullscreenToolbarKey,
+                             window.toolbar ?: NSNull.null,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    NucleusTaoFullscreenToolbarDelegate *delegate =
+        [[NucleusTaoFullscreenToolbarDelegate alloc] init];
+    NSToolbar *toolbar =
+        [[NSToolbar alloc] initWithIdentifier:@"NucleusTaoFullscreenToolbar"];
+    toolbar.allowsUserCustomization = NO;
+    toolbar.autosavesConfiguration = NO;
+    toolbar.displayMode = NSToolbarDisplayModeIconOnly;
+    toolbar.showsBaselineSeparator = NO;
+    toolbar.delegate = delegate;
+    objc_setAssociatedObject(window, &kTaoFullscreenToolbarDelegateKey, delegate,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(window, &kTaoManagedFullscreenToolbarKey, toolbar,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    window.toolbar = toolbar;
+    window.titlebarAppearsTransparent = NO;
+    window.titleVisibility = NSWindowTitleVisible;
+    if (@available(macOS 11.0, *)) {
+        window.titlebarSeparatorStyle = NSTitlebarSeparatorStyleNone;
+    }
+}
+
+static void restoreNativeFullscreenToolbar(NSWindow *window) {
+    NSToolbar *managed =
+        objc_getAssociatedObject(window, &kTaoManagedFullscreenToolbarKey);
+    if (managed == nil) return;
+    if (window.toolbar == managed) {
+        id previous = objc_getAssociatedObject(window, &kTaoPreviousFullscreenToolbarKey);
+        window.toolbar = [previous isKindOfClass:NSToolbar.class] ? previous : nil;
+    }
+    NSNumber *style = objc_getAssociatedObject(window, &kTaoPreviousToolbarStyleKey);
+    if (@available(macOS 11.0, *)) {
+        if (style != nil) window.toolbarStyle = (NSWindowToolbarStyle)style.integerValue;
+    }
+    NSView *passthrough = objc_getAssociatedObject(window, &kTaoPassthroughViewKey);
+    passthrough.hidden = NO;
+    window.titlebarAppearsTransparent = YES;
+    window.titleVisibility = NSWindowTitleHidden;
+    const char *keys[] = {
+        &kTaoManagedFullscreenToolbarKey,
+        &kTaoPreviousFullscreenToolbarKey,
+        &kTaoFullscreenToolbarDelegateKey,
+        &kTaoPreviousToolbarStyleKey,
+        &kTaoNativeFullscreenButtonsKey,
+    };
+    for (NSUInteger index = 0; index < sizeof(keys) / sizeof(keys[0]); index++) {
+        objc_setAssociatedObject(window, keys[index], nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 }
 
 static float defaultButtonOffset(void) {
@@ -168,6 +332,7 @@ static JavaVM *sMetalJVM = NULL;
 static jclass sMetalBridgeClass = NULL;       // global ref
 static jmethodID sMetalOnOffsetChanged = NULL;
 static jmethodID sMetalOnFullscreenPrepare = NULL;
+static jmethodID sMetalOnFullscreenTransition = NULL;
 static atomic_bool sMetalCallbacksEnabled = ATOMIC_VAR_INIT(false);
 static atomic_bool sMetalShutdownInProgress = ATOMIC_VAR_INIT(false);
 
@@ -184,6 +349,8 @@ static void ensureMetalJVMCached(JNIEnv *env) {
                 env, sMetalBridgeClass, "onMenuBarOffsetChanged", "(JF)V");
             sMetalOnFullscreenPrepare = (*env)->GetStaticMethodID(
                 env, sMetalBridgeClass, "onFullscreenPrepare", "(JII)V");
+            sMetalOnFullscreenTransition = (*env)->GetStaticMethodID(
+                env, sMetalBridgeClass, "onFullscreenTransition", "(JZZ)V");
             atomic_store(&sMetalCallbacksEnabled, true);
         }
     });
@@ -248,6 +415,35 @@ static void notifyFullscreenPrepare(jlong nsViewPtr, jint widthPx, jint heightPx
     }
 }
 
+static void notifyFullscreenTransition(jlong nsViewPtr, BOOL fullscreen, BOOL completed) {
+    if (!atomic_load(&sMetalCallbacksEnabled)) return;
+    if (!sMetalJVM || !sMetalBridgeClass || !sMetalOnFullscreenTransition) return;
+
+    JNIEnv *env = NULL;
+    jint status = (*sMetalJVM)->GetEnv(sMetalJVM, (void **)&env, JNI_VERSION_1_8);
+    if (status == JNI_EDETACHED) {
+        if ((*sMetalJVM)->AttachCurrentThreadAsDaemon(sMetalJVM, (void **)&env, NULL) != JNI_OK) {
+            return;
+        }
+    } else if (status != JNI_OK) {
+        return;
+    }
+    if (!env) return;
+
+    (*env)->CallStaticVoidMethod(
+        env,
+        sMetalBridgeClass,
+        sMetalOnFullscreenTransition,
+        nsViewPtr,
+        fullscreen ? JNI_TRUE : JNI_FALSE,
+        completed ? JNI_TRUE : JNI_FALSE
+    );
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
+}
+
 static void reinstallToolbarIfNeeded(NSWindow *window) {
     NSNumber *had = objc_getAssociatedObject(window, &kTaoHadToolbarKey);
     if (![had boolValue] || window.toolbar != nil) return;
@@ -263,6 +459,12 @@ typedef struct {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     NSView *view;
+    BOOL extended_dynamic_range;
+    NSInteger screen_number;
+    float output_headroom;
+    float output_maximum_nits;
+    _Atomic uint64_t output_generation;
+    _Atomic uint64_t presented_frames;
     // 0 = normal; 1 = inside an AppKit fullscreen transition. Render path
     // skips nextDrawable while non-zero so we don't block on a paused
     // swapchain (Apple holds drawables for the duration of the animation).
@@ -318,6 +520,40 @@ typedef struct {
 } NucleusTaoMetalAttachment;
 
 #define HANDLE_OF(ptr) ((NucleusTaoMetalAttachment *)(uintptr_t)(ptr))
+
+// Extended-linear sRGB uses the nominal sRGB reference white. EDR headroom is
+// relative to this value; NSScreen exposes the ratio, not an absolute nit value.
+#define NUCLEUS_SRGB_REFERENCE_WHITE_NITS 80.0f
+
+/* Refreshes the EDR facts that belong to the view's current NSScreen. This is
+ * deliberately called by Kotlin on the AppKit thread before submitting a
+ * frame; querying NSScreen from the Metal render thread would require a
+ * render->main sync hop while the main thread is waiting for replay. */
+static void refreshOutputCapabilities(NucleusTaoMetalAttachment *att) {
+    if (att == NULL || att->view == nil) return;
+    NSScreen *screen = att->view.window.screen ?: [NSScreen mainScreen];
+    NSInteger screenNumber = 0;
+    float headroom = 1.0f;
+    float maximumNits = NUCLEUS_SRGB_REFERENCE_WHITE_NITS;
+    if (screen != nil) {
+        NSNumber *number = screen.deviceDescription[@"NSScreenNumber"];
+        if (number != nil) screenNumber = number.integerValue;
+        if (@available(macOS 10.15, *)) {
+            CGFloat current = screen.maximumExtendedDynamicRangeColorComponentValue;
+            CGFloat potential = screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
+            headroom = (float)MAX(1.0, current);
+            maximumNits = NUCLEUS_SRGB_REFERENCE_WHITE_NITS * (float)MAX(1.0, potential);
+        }
+    }
+    if (att->screen_number != screenNumber || att->output_headroom != headroom ||
+        att->output_maximum_nits != maximumNits) {
+        att->screen_number = screenNumber;
+        att->output_headroom = headroom;
+        att->output_maximum_nits = maximumNits;
+        atomic_fetch_add(&att->output_generation, 1);
+        atomic_store(&att->presented_frames, 0);
+    }
+}
 
 // Converts a CVTimeStamp mach host-time to the CACurrentMediaTime() seconds base
 // expected by -[MTLCommandBuffer presentDrawable:atTime:].
@@ -637,9 +873,28 @@ static void computeButtonMetrics(float titleBarHeight,
     *outOffset    = shrinkFactor * defaultButtonOffset();
 }
 
+static float resolvedFullscreenTitleBarHeight(NSWindow *window, float fallback) {
+    NSNumber *overlayHeight =
+        objc_getAssociatedObject(window, &kTaoFullscreenOverlayHeightKey);
+    return overlayHeight != nil ? overlayHeight.floatValue : fallback;
+}
+
+static float fullscreenTitleBarOverlayOffset(NSWindow *window) {
+    NSNumber *overlayOffset =
+        objc_getAssociatedObject(window, &kTaoFullscreenOverlayOffsetKey);
+    return overlayOffset != nil ? overlayOffset.floatValue : 0.0f;
+}
+
 static void installFullScreenButtons(NSWindow *window, float titleBarHeight) {
     if (objc_getAssociatedObject(window, &kTaoFullscreenButtonsKey)) return;
-    if ([window standardWindowButton:NSWindowCloseButton] == nil) return;
+    if (usesNativeFullscreenToolbar(window)) return;
+    // AppKit may already have detached the original title-bar hierarchy into
+    // its fullscreen toolbar window, at which point standardWindowButton:
+    // returns nil for the owner. prepareNativeFullscreenToolbar preserves the
+    // originals so their presence remains a reliable readiness check.
+    if (nativeFullscreenButton(window, NSWindowCloseButton) == nil) return;
+
+    titleBarHeight = resolvedFullscreenTitleBarHeight(window, titleBarHeight);
 
     float btnWidth, btnHeight, offset;
     computeButtonMetrics(titleBarHeight, &btnWidth, &btnHeight, &offset);
@@ -651,10 +906,11 @@ static void installFullScreenButtons(NSWindow *window, float titleBarHeight) {
     // bar (and these replacement buttons) follow it down by `menuBarOffset`.
     NSNumber *menuOffsetNum = objc_getAssociatedObject(window, &kTaoMenuBarOffsetKey);
     float menuBarOffset = menuOffsetNum != nil ? menuOffsetNum.floatValue : 0.0f;
+    float overlayOffset = fullscreenTitleBarOverlayOffset(window);
 
     NucleusTaoButtonsView *container = [[NucleusTaoButtonsView alloc] init];
     NSView *parent = window.contentView;
-    CGFloat y = parent.frame.size.height - titleBarHeight - menuBarOffset;
+    CGFloat y = parent.frame.size.height - titleBarHeight - menuBarOffset - overlayOffset;
     float margin = fminf(titleBarHeight / 2.0f, kMaxButtonLeftMargin);
     float containerWidth = margin + 2.0f * offset + btnWidth;
     // RTL: anchor the container to the right edge of contentView and let it
@@ -732,20 +988,22 @@ static void updateFullScreenButtonsPosition(NSWindow *window) {
     if (parent == nil) return;
 
     NSNumber *storedHeight = objc_getAssociatedObject(window, &kTaoTitleBarHeightKey);
-    float titleBarHeight = storedHeight != nil ? storedHeight.floatValue : kMinHeightForFullSize;
+    float fallbackHeight = storedHeight != nil ? storedHeight.floatValue : kMinHeightForFullSize;
+    float titleBarHeight = resolvedFullscreenTitleBarHeight(window, fallbackHeight);
 
     float btnWidth, btnHeight, offset;
     computeButtonMetrics(titleBarHeight, &btnWidth, &btnHeight, &offset);
 
     NSNumber *menuOffsetNum = objc_getAssociatedObject(window, &kTaoMenuBarOffsetKey);
     float menuBarOffset = menuOffsetNum != nil ? menuOffsetNum.floatValue : 0.0f;
+    float overlayOffset = fullscreenTitleBarOverlayOffset(window);
 
     NSNumber *rtlNum = objc_getAssociatedObject(window, &kTaoButtonsRtlKey);
     BOOL rtl = rtlNum != nil && rtlNum.boolValue;
 
     float margin = fminf(titleBarHeight / 2.0f, kMaxButtonLeftMargin);
     float containerWidth = margin + 2.0f * offset + btnWidth;
-    CGFloat y = parent.frame.size.height - titleBarHeight - menuBarOffset;
+    CGFloat y = parent.frame.size.height - titleBarHeight - menuBarOffset - overlayOffset;
     CGFloat containerX = rtl ? (parent.frame.size.width - containerWidth) : 0.0f;
     [container setFrame:NSMakeRect(containerX, y, containerWidth, titleBarHeight)];
 
@@ -784,9 +1042,8 @@ static const UInt32 kTaoMenuBarRevealEventKind = 2004;
 
 static EventHandlerRef sTaoMenuBarEventHandler = NULL;
 
-// Applies a menu bar reveal fraction to every monitored fullscreen window:
-// stores the raw offset, moves the native traffic-light container, and
-// notifies the Kotlin side. Runs on the main thread (Carbon dispatch).
+// Applies menu-bar offsets only to the legacy Compose/replacement-controls
+// path. The native toolbar has no monitor and is animated solely by AppKit.
 static void applyMenuBarFraction(CGFloat fraction) {
     if (atomic_load(&sMetalShutdownInProgress)) return;
 
@@ -884,7 +1141,8 @@ static void installMenuBarMonitor(NSView *view) {
     // a seam line in the title-bar area (issue #310 B4/C).
     if (!isTahoeOrLater()) return;
     NSWindow *window = view.window;
-    if (window == nil) return;
+    if (window == nil || usesNativeFullscreenToolbar(window)) return;
+    if ((window.styleMask & NSWindowStyleMaskFullScreen) == 0) return;
 
     // Cache the NSView pointer on the window so the JNI callback can route
     // by the same opaque key Kotlin used to subscribe to the StateFlow.
@@ -978,10 +1236,15 @@ static void removeMenuBarMonitor(NSWindow *window) {
 }
 
 - (void)willEnterFS:(NSNotification *)n {
-    NTLOG("FS willEnter — restore default chrome + remove constraints + drop toolbar");
+    NTLOG("FS willEnter — restore default chrome + remove constraints");
     [self setTransition:1];
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        YES,
+        NO
+    );
     // Drop any in-flight menu bar offset so the monitor (re)installed in
     // didEnterFS starts from a known baseline.
     removeMenuBarMonitor(w);
@@ -1001,8 +1264,15 @@ static void removeMenuBarMonitor(NSWindow *window) {
     // sections again (issue #497). Restored to NO in didExitFS. Mirrors
     // decorated-window-jni's willEnterFullScreen/didExitFullScreen.
     [w setMovable:YES];
-    // Drop the invisible toolbar to avoid AppKit's white-band glitch.
-    if (w.toolbar != nil) {
+    if (usesNativeFullscreenToolbar(w)) {
+        // AutoHideToolbar is returned by Tao's NSWindow delegate. A concrete
+        // toolbar must be attached before AppKit builds its detached
+        // fullscreen chrome window, otherwise the option has no rollover
+        // region to synchronize with the menu bar.
+        prepareNativeFullscreenToolbar(w);
+    } else if (w.toolbar != nil) {
+        // Legacy path: the corner-radius marker toolbar is not part of the
+        // fullscreen experience and would create an opaque white band.
         objc_setAssociatedObject(w, &kTaoHadToolbarKey, @YES,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         w.toolbar = nil;
@@ -1048,6 +1318,11 @@ static void removeMenuBarMonitor(NSWindow *window) {
     [self setTransition:1];
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        NO,
+        NO
+    );
     // Tear down the menu bar monitor before the exit animation so AppKit
     // can transition its native chrome without our monitor racing it.
     removeMenuBarMonitor(w);
@@ -1076,16 +1351,19 @@ static void removeMenuBarMonitor(NSWindow *window) {
     // Tear down replacement buttons + un-hide the AppKit titlebar container so
     // AppKit can drive the exit animation against its standard chrome.
     removeFullScreenButtons(w);
-    NSView *btn = [w standardWindowButton:NSWindowCloseButton];
+    NSView *btn = nativeFullscreenButton(w, NSWindowCloseButton);
     NSView *tbc = btn ? btn.superview.superview : nil;
     if (tbc != nil && tbc.hidden) tbc.hidden = NO;
     // Hide the standard buttons during the exit animation so they don't
     // appear at the wrong (default) position before our constraints kick in.
-    [[w standardWindowButton:NSWindowCloseButton] setHidden:YES];
-    [[w standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
-    [[w standardWindowButton:NSWindowZoomButton] setHidden:YES];
+    [nativeFullscreenButton(w, NSWindowCloseButton) setHidden:YES];
+    [nativeFullscreenButton(w, NSWindowMiniaturizeButton) setHidden:YES];
+    [nativeFullscreenButton(w, NSWindowZoomButton) setHidden:YES];
     w.titlebarAppearsTransparent = YES;
     w.titleVisibility = NSWindowTitleHidden;
+    // Leave the small managed toolbar attached for AppKit's native exit
+    // animation. didExitFS restores the windowed toolbar after AppKit has
+    // finished changing the window frame.
 }
 
 - (void)didEnterFS:(NSNotification *)n {
@@ -1104,37 +1382,37 @@ static void removeMenuBarMonitor(NSWindow *window) {
     }
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        YES,
+        YES
+    );
     applyStoredWindowBackground(w, _view);
-    // Install replacement traffic-light buttons inside the contentView so
-    // they remain visible when AppKit auto-hides the native title bar (and
-    // they don't disappear with our custom Compose title bar in fullscreen).
+    BOOL nativeToolbar = usesNativeFullscreenToolbar(w);
     NSNumber *h = objc_getAssociatedObject(w, &kTaoTitleBarHeightKey);
     float height = h ? [h floatValue] : kMinHeightForFullSize;
-    installFullScreenButtons(w, height);
-    // Intentionally NOT reinstalling the invisible NSToolbar in fullscreen.
-    // The toolbar exists solely to opt the window into the macOS 26 large
-    // corner radius — irrelevant on a screen-spanning window — but having
-    // it attached makes AppKit allocate a tall opaque band at the top of
-    // the contentView, visible as a white strip above the Compose title
-    // bar. didExitFS reinstalls it via the kTaoHadToolbarKey flag set in
-    // willEnterFS, so the windowed-mode chrome restores correctly.
-    // Hide the AppKit titlebar container to prevent it from intercepting
-    // clicks meant for our Compose content (the contentView spans the full
-    // window in fullscreen due to FullSizeContentView).
-    NSView *btn = [w standardWindowButton:NSWindowCloseButton];
+    NSView *btn = nativeFullscreenButton(w, NSWindowCloseButton);
     NSView *tbc = btn ? btn.superview.superview : nil;
-    if (tbc != nil) tbc.hidden = YES;
-    // Also hide the standard buttons themselves: when the menu bar is
-    // revealed, AppKit can re-host the native title bar in its fullscreen
-    // overlay window, bypassing the hidden container (issue #310 B2).
-    // Restored in didExitFS.
-    [[w standardWindowButton:NSWindowCloseButton] setHidden:YES];
-    [[w standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
-    [[w standardWindowButton:NSWindowZoomButton] setHidden:YES];
+    if (nativeToolbar) {
+        // The real AppKit controls remain in their original title-bar tree.
+        // Do not recreate, reparent or animate a second set of traffic lights.
+        if (tbc != nil) tbc.hidden = NO;
+        [nativeFullscreenButton(w, NSWindowCloseButton) setHidden:NO];
+        [nativeFullscreenButton(w, NSWindowMiniaturizeButton) setHidden:NO];
+        [nativeFullscreenButton(w, NSWindowZoomButton) setHidden:NO];
+    } else {
+        // Legacy/custom path for pre-Tahoe systems: replacement controls live
+        // in contentView because there is no native coupled toolbar behavior.
+        installFullScreenButtons(w, height);
+        if (tbc != nil) tbc.hidden = YES;
+        [[w standardWindowButton:NSWindowCloseButton] setHidden:YES];
+        [[w standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
+        [[w standardWindowButton:NSWindowZoomButton] setHidden:YES];
+    }
     // newFullscreenControls — install the menu bar monitor so the title bar
     // and traffic-lights animate down as the system menu bar slides in.
     NSNumber *newCtrls = objc_getAssociatedObject(w, &kTaoNewFullscreenControlsKey);
-    if (newCtrls != nil && newCtrls.boolValue) {
+    if (!nativeToolbar && newCtrls != nil && newCtrls.boolValue) {
         installMenuBarMonitor(_view);
     }
     // Pre-Tahoe: the Safari-style title bar is disabled, but AppKit still
@@ -1169,16 +1447,22 @@ static void removeMenuBarMonitor(NSWindow *window) {
     }
     NSWindow *w = _view.window;
     if (w == nil) return;
+    notifyFullscreenTransition(
+        (jlong)(uintptr_t)(__bridge void *) _view,
+        NO,
+        YES
+    );
     applyStoredWindowBackground(w, _view);
     // Re-show the standard buttons (hidden in willExitFS).
-    [[w standardWindowButton:NSWindowCloseButton] setHidden:NO];
-    [[w standardWindowButton:NSWindowMiniaturizeButton] setHidden:NO];
-    [[w standardWindowButton:NSWindowZoomButton] setHidden:NO];
+    [nativeFullscreenButton(w, NSWindowCloseButton) setHidden:NO];
+    [nativeFullscreenButton(w, NSWindowMiniaturizeButton) setHidden:NO];
+    [nativeFullscreenButton(w, NSWindowZoomButton) setHidden:NO];
     // Back to the non-movable at-rest state (movable since willEnterFS). Also
     // clears the latched movable=YES when fullscreen was entered by clicking
     // the zoom button mid-hover — the button is hidden before mouseExited can
     // deliver, so the responder never restores it (issue #497).
     [w setMovable:NO];
+    restoreNativeFullscreenToolbar(w);
     // Reinstall the invisible toolbar (corner radius) and reapply the
     // button-centering constraints for our custom title bar height.
     reinstallToolbarIfNeeded(w);
@@ -1208,7 +1492,7 @@ static void ensureFrameClassLoaded(JNIEnv *env) {
 
 JNIEXPORT jlong JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
-        JNIEnv *env, jclass clazz, jlong nsViewPtr) {
+        JNIEnv *env, jclass clazz, jlong nsViewPtr, jboolean extendedDynamicRange) {
     // Prime the native -> JVM callback plumbing for every window, not just the
     // ones that happen to install a menu-bar monitor: the fullscreen-transition
     // prepare (#327) fires from an AppKit notification with no JNIEnv of its
@@ -1225,8 +1509,25 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
 
     CAMetalLayer *layer = [CAMetalLayer layer];
     layer.device = device;
-    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    BOOL useExtendedDynamicRange = extendedDynamicRange == JNI_TRUE;
+    layer.pixelFormat = useExtendedDynamicRange
+        ? MTLPixelFormatRGBA16Float
+        : MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly = YES;
+    if (useExtendedDynamicRange) {
+        // A float swapchain alone is not enough: without the extended-linear
+        // color space and the EDR opt-in CoreAnimation treats the drawable as
+        // ordinary SDR and clamps values above reference white at presentation.
+        CGColorSpaceRef colorSpace =
+            CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
+        if (colorSpace != NULL) {
+            layer.colorspace = colorSpace;
+            CGColorSpaceRelease(colorSpace);
+        }
+        if (@available(macOS 10.15, *)) {
+            layer.wantsExtendedDynamicRangeContent = YES;
+        }
+    }
     layer.contentsScale = view.window.backingScaleFactor > 0
         ? view.window.backingScaleFactor
         : [NSScreen mainScreen].backingScaleFactor;
@@ -1251,6 +1552,11 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
     att->view   = view;
     att->prev_origin_x = NAN;
     att->prev_origin_y = NAN;
+    att->extended_dynamic_range = useExtendedDynamicRange;
+    att->output_headroom = 1.0f;
+    att->output_maximum_nits = NUCLEUS_SRGB_REFERENCE_WHITE_NITS;
+    atomic_store(&att->output_generation, 1);
+    atomic_store(&att->presented_frames, 0);
 
     // Install fullscreen observer so the CAMetalLayer wiring survives an
     // AppKit toggleFullScreen: transition. We hang the attachment pointer
@@ -1270,6 +1576,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAttach(
     };
     if ([NSThread isMainThread]) installObserver();
     else                          dispatch_sync(dispatch_get_main_queue(), installObserver);
+    refreshOutputCapabilities(att);
 
     NTLOG("nativeAttach done att=%p layer=%p device=%p", att, att->layer, att->device);
     return (jlong)(uintptr_t)att;
@@ -1389,6 +1696,38 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeConfigureChrome
     };
     if ([NSThread isMainThread]) apply();
     else                          dispatch_sync(dispatch_get_main_queue(), apply);
+}
+
+/**
+ * Returns AppKit's click count for the left-mouse-down event currently being
+ * dispatched to this NSView's window. Unlike a JVM-side elapsed-time check,
+ * NSEvent.clickCount already honours the user's double-click speed and the
+ * platform's spatial tolerance.
+ */
+JNIEXPORT jint JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeCurrentEventClickCount(
+        JNIEnv *env, jclass clazz, jlong nsViewPtr) {
+    NSView *view = (__bridge NSView *)(void *)(uintptr_t)nsViewPtr;
+    if (view == nil) return 0;
+
+    __block jint result = 0;
+    dispatch_block_t read = ^{
+        NSWindow *win = view.window;
+        NSEvent *event = [NSApp currentEvent];
+        if (win != nil && event != nil &&
+            event.type == NSEventTypeLeftMouseDown && event.window == win) {
+            result = (jint)event.clickCount;
+        }
+    };
+    if ([NSThread isMainThread]) read();
+    else                          dispatch_sync(dispatch_get_main_queue(), read);
+    return result;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeDoubleClickIntervalMillis(
+        JNIEnv *env, jclass clazz) {
+    return (jlong)llround([NSEvent doubleClickInterval] * 1000.0);
 }
 
 /**
@@ -1752,6 +2091,17 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeApplyButtonLayo
     dispatch_block_t apply = ^{
         NSWindow *win = view.window;
         if (win == nil) return;
+        // The native toolbar owns chrome for the entire transition/session.
+        // A zero Compose slot must never reinstall private title-bar constraints.
+        if (objc_getAssociatedObject(win, &kTaoManagedFullscreenToolbarKey) != nil) return;
+        // FullscreenOverlayHost intentionally collapses the inline title-bar
+        // slot to zero. Preserve the last windowed height and constraints while
+        // fullscreen; the replacement controls use the separate overlay height.
+        if ((win.styleMask & NSWindowStyleMaskFullScreen) != 0 &&
+            objc_getAssociatedObject(win, &kTaoFullscreenOverlayHeightKey) != nil) {
+            updateFullScreenButtonsPosition(win);
+            return;
+        }
         applyButtonConstraints(win, titleBarHeight);
     };
     if ([NSThread isMainThread]) apply();
@@ -1783,6 +2133,7 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeSetButtonLayout
         if (h == nil) return;
         BOOL isFullScreen = ([win styleMask] & NSWindowStyleMaskFullScreen) != 0;
         if (isFullScreen) {
+            if (usesNativeFullscreenToolbar(win)) return;
             // In fullscreen only re-install the replacement traffic-light
             // container so the new RTL flag takes effect on the overlay
             // buttons (otherwise they'd stay anchored on the side matched at
@@ -1796,6 +2147,11 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeSetButtonLayout
             // Mirrors decorated-window-jni's nativeSetRTL.
             removeFullScreenButtons(win);
             installFullScreenButtons(win, h.floatValue);
+            __weak NSWindow *weakWindow = win;
+            float height = h.floatValue;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                installFullScreenButtons(weakWindow, height);
+            });
         } else {
             applyButtonConstraints(win, h.floatValue);
         }
@@ -2025,11 +2381,10 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAddGlassRegion(
                 pane = [NSSplitViewItem contentListWithViewController:paneVC];
                 break;
             case TAO_GLASS_REGION_KIND_INSPECTOR:
-                if ([NSSplitViewItem respondsToSelector:
-                        @selector(inspectorWithViewController:)]) {
+                if (@available(macOS 11.0, *)) {
                     pane = [NSSplitViewItem inspectorWithViewController:paneVC];
                 } else {
-                    // macOS < 14: closest system pane material.
+                    // macOS 10.15: closest system pane material.
                     pane = [NSSplitViewItem contentListWithViewController:paneVC];
                 }
                 break;
@@ -2266,6 +2621,72 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeQueuePtr(
     return (jlong)(uintptr_t) (__bridge void *) HANDLE_OF(handle)->queue;
 }
 
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeViewPtr(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    if (handle == 0) return 0;
+    return (jlong)(uintptr_t) (__bridge void *) HANDLE_OF(handle)->view;
+}
+
+JNIEXPORT void JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeRefreshOutputCapabilities(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    if (handle == 0) return;
+    NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
+    if ([NSThread isMainThread]) {
+        refreshOutputCapabilities(att);
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), ^{ refreshOutputCapabilities(att); });
+    }
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeIsHdrOutput(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    if (handle == 0) return JNI_FALSE;
+    NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
+    return att->extended_dynamic_range && att->output_headroom > 1.0f ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeSdrWhiteLevelNits(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz; (void) handle;
+    return NUCLEUS_SRGB_REFERENCE_WHITE_NITS;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeMaximumLuminanceNits(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    return handle == 0
+        ? NUCLEUS_SRGB_REFERENCE_WHITE_NITS
+        : HANDLE_OF(handle)->output_maximum_nits;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeHeadroom(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    return handle == 0 ? 1.0f : HANDLE_OF(handle)->output_headroom;
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeOutputGeneration(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    return handle == 0 ? 0 : (jlong)atomic_load(&HANDLE_OF(handle)->output_generation);
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativePresentedFrameCount(
+        JNIEnv *env, jclass clazz, jlong handle) {
+    (void) env; (void) clazz;
+    return handle == 0 ? 0 : (jlong)atomic_load(&HANDLE_OF(handle)->presented_frames);
+}
+
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeResize(
         JNIEnv *env, jclass clazz, jlong handle, jint widthPx, jint heightPx, jfloat scale) {
@@ -2361,34 +2782,43 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeAutoreleasePool
 JNIEXPORT jobject JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeBeginFrame(
         JNIEnv *env, jclass clazz, jlong handle) {
-    if (handle == 0) return NULL;
-    NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
+    // This JNI entry point is called from Tao's JVM-owned Metal render thread,
+    // not an AppKit event-loop thread. Such a thread has no implicit
+    // autorelease pool. nextDrawable returns an autoreleased object; without a
+    // local pool its original reference survives for the lifetime of the JVM
+    // thread even though the explicit bridge retain is balanced by present().
+    // Each leaked drawable owns a full-size IOSurface, so 8K playback can grow
+    // into tens of gigabytes after only a few hundred frames.
+    @autoreleasepool {
+        if (handle == 0) return NULL;
+        NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
 
-    id<CAMetalDrawable> drawable = [att->layer nextDrawable];
-    if (drawable == nil) {
-        return NULL;
+        id<CAMetalDrawable> drawable = [att->layer nextDrawable];
+        if (drawable == nil) {
+            return NULL;
+        }
+
+        // Retain so the JVM can hold the pointer until present(); released there.
+        void *retained = (__bridge_retained void *) drawable;
+
+        id<MTLTexture> texture = drawable.texture;
+        CGSize size = att->layer.drawableSize;
+        CGFloat scale = att->layer.contentsScale;
+
+        ensureFrameClassLoaded(env);
+        if (gFrameClass == NULL || gFrameConstructor == NULL) {
+            // Drop the retain to avoid leaking the drawable when the JVM mapping fails.
+            CFBridgingRelease(retained);
+            return NULL;
+        }
+
+        return (*env)->NewObject(env, gFrameClass, gFrameConstructor,
+            (jlong)(uintptr_t) retained,
+            (jlong)(uintptr_t) (__bridge void *) texture,
+            (jint) size.width,
+            (jint) size.height,
+            (jfloat) scale);
     }
-
-    // Retain so the JVM can hold the pointer until present(); released there.
-    void *retained = (__bridge_retained void *) drawable;
-
-    id<MTLTexture> texture = drawable.texture;
-    CGSize size = att->layer.drawableSize;
-    CGFloat scale = att->layer.contentsScale;
-
-    ensureFrameClassLoaded(env);
-    if (gFrameClass == NULL || gFrameConstructor == NULL) {
-        // Drop the retain to avoid leaking the drawable when the JVM mapping fails.
-        CFBridgingRelease(retained);
-        return NULL;
-    }
-
-    return (*env)->NewObject(env, gFrameClass, gFrameConstructor,
-        (jlong)(uintptr_t) retained,
-        (jlong)(uintptr_t) (__bridge void *) texture,
-        (jint) size.width,
-        (jint) size.height,
-        (jfloat) scale);
 }
 
 JNIEXPORT jboolean JNICALL
@@ -2402,24 +2832,30 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeIsInTransition(
 JNIEXPORT void JNICALL
 Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativePresent(
         JNIEnv *env, jclass clazz, jlong handle, jlong drawablePtr) {
-    if (handle == 0 || drawablePtr == 0) return;
-    NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
+    // commandBuffer is autoreleased as well. Drain it once the committed
+    // present has retained everything it needs instead of retaining every
+    // drawable on the long-lived JVM render thread.
+    @autoreleasepool {
+        if (handle == 0 || drawablePtr == 0) return;
+        NucleusTaoMetalAttachment *att = HANDLE_OF(handle);
 
-    // Move ownership back so ARC releases after the present block finishes.
-    id<CAMetalDrawable> drawable = (__bridge_transfer id<CAMetalDrawable>)
-        (void *)(uintptr_t) drawablePtr;
+        // Move ownership back so ARC releases after the present block finishes.
+        id<CAMetalDrawable> drawable = (__bridge_transfer id<CAMetalDrawable>)
+            (void *)(uintptr_t) drawablePtr;
 
-    id<MTLCommandBuffer> commandBuffer = [att->queue commandBuffer];
-    // Pace the present to the upcoming vsync recorded by the display-link
-    // callback so exactly one present lands per refresh. Falls back to an
-    // untimed present if the display link isn't running yet (first frame / resize).
-    double presentTime = hostTimeToSeconds(atomic_load(&att->next_present_host_time));
-    if (presentTime > 0.0) {
-        [commandBuffer presentDrawable:drawable atTime:presentTime];
-    } else {
-        [commandBuffer presentDrawable:drawable];
+        id<MTLCommandBuffer> commandBuffer = [att->queue commandBuffer];
+        // Pace the present to the upcoming vsync recorded by the display-link
+        // callback so exactly one present lands per refresh. Falls back to an
+        // untimed present if the display link isn't running yet (first frame / resize).
+        double presentTime = hostTimeToSeconds(atomic_load(&att->next_present_host_time));
+        if (presentTime > 0.0) {
+            [commandBuffer presentDrawable:drawable atTime:presentTime];
+        } else {
+            [commandBuffer presentDrawable:drawable];
+        }
+        [commandBuffer commit];
+        atomic_fetch_add(&att->presented_frames, 1);
     }
-    [commandBuffer commit];
 }
 
 // ── VSync-paced rendering via CVDisplayLink ──────────────────────────────
@@ -2567,51 +3003,54 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativePresentWithInte
     id<MTLCommandQueue> queue = att->queue;
 
     void (^work)(void) = ^{
-        [CATransaction begin];
+        @autoreleasepool {
+            [CATransaction begin];
 
-        id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
-        [commandBuffer commit];
-        // Block until the GPU has scheduled our work — required before an
-        // explicit [drawable present] under presentsWithTransaction = YES.
-        [commandBuffer waitUntilScheduled];
-        [drawable present];
+            id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
+            [commandBuffer commit];
+            // Block until the GPU has scheduled our work — required before an
+            // explicit [drawable present] under presentsWithTransaction = YES.
+            [commandBuffer waitUntilScheduled];
+            [drawable present];
 
-        if (interopGlobal != NULL) {
-            // Resolve the main thread's JNIEnv (it's the JVM main thread, so
-            // already attached). Cache Runnable.run() once — stable for the
-            // JVM lifetime.
-            JNIEnv *menv = NULL;
-            jint status = sMetalJVM
-                ? (*sMetalJVM)->GetEnv(sMetalJVM, (void **)&menv, JNI_VERSION_1_8)
-                : JNI_ERR;
-            if (status == JNI_EDETACHED && sMetalJVM) {
-                (*sMetalJVM)->AttachCurrentThreadAsDaemon(sMetalJVM, (void **)&menv, NULL);
-            }
-            if (menv != NULL) {
-                static jclass sRunnableClass = NULL;
-                static jmethodID sRunMethod = NULL;
-                if (sRunMethod == NULL) {
-                    jclass local = (*menv)->FindClass(menv, "java/lang/Runnable");
-                    if (local != NULL) {
-                        sRunnableClass = (*menv)->NewGlobalRef(menv, local);
-                        (*menv)->DeleteLocalRef(menv, local);
-                        if (sRunnableClass != NULL) {
-                            sRunMethod = (*menv)->GetMethodID(menv, sRunnableClass, "run", "()V");
+            if (interopGlobal != NULL) {
+                // Resolve the main thread's JNIEnv (it's the JVM main thread, so
+                // already attached). Cache Runnable.run() once — stable for the
+                // JVM lifetime.
+                JNIEnv *menv = NULL;
+                jint status = sMetalJVM
+                    ? (*sMetalJVM)->GetEnv(sMetalJVM, (void **)&menv, JNI_VERSION_1_8)
+                    : JNI_ERR;
+                if (status == JNI_EDETACHED && sMetalJVM) {
+                    (*sMetalJVM)->AttachCurrentThreadAsDaemon(sMetalJVM, (void **)&menv, NULL);
+                }
+                if (menv != NULL) {
+                    static jclass sRunnableClass = NULL;
+                    static jmethodID sRunMethod = NULL;
+                    if (sRunMethod == NULL) {
+                        jclass local = (*menv)->FindClass(menv, "java/lang/Runnable");
+                        if (local != NULL) {
+                            sRunnableClass = (*menv)->NewGlobalRef(menv, local);
+                            (*menv)->DeleteLocalRef(menv, local);
+                            if (sRunnableClass != NULL) {
+                                sRunMethod = (*menv)->GetMethodID(menv, sRunnableClass, "run", "()V");
+                            }
                         }
                     }
-                }
-                if (sRunMethod != NULL) {
-                    (*menv)->CallVoidMethod(menv, interopGlobal, sRunMethod);
-                    if ((*menv)->ExceptionCheck(menv)) {
-                        (*menv)->ExceptionDescribe(menv);
-                        (*menv)->ExceptionClear(menv);
+                    if (sRunMethod != NULL) {
+                        (*menv)->CallVoidMethod(menv, interopGlobal, sRunMethod);
+                        if ((*menv)->ExceptionCheck(menv)) {
+                            (*menv)->ExceptionDescribe(menv);
+                            (*menv)->ExceptionClear(menv);
+                        }
                     }
+                    (*menv)->DeleteGlobalRef(menv, interopGlobal);
                 }
-                (*menv)->DeleteGlobalRef(menv, interopGlobal);
             }
-        }
 
-        [CATransaction commit];
+            [CATransaction commit];
+            atomic_fetch_add(&att->presented_frames, 1);
+        }
     };
 
     if ([NSThread isMainThread]) {
@@ -2758,6 +3197,56 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeSetMenuBarOffse
         objc_setAssociatedObject(w, &kTaoMenuBarOffsetKey, @(offsetPt),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         updateFullScreenButtonsPosition(w);
+    };
+    if ([NSThread isMainThread]) apply();
+    else                          dispatch_async(dispatch_get_main_queue(), apply);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeSetFullscreenTitleBarOverlay(
+        JNIEnv *env, jclass clazz, jlong nsViewPtr, jboolean enabled,
+        jfloat titleBarHeight, jfloat offsetPt) {
+    if (nsViewPtr == 0) return;
+    void *rawPtr = (void *)(uintptr_t)nsViewPtr;
+    dispatch_block_t apply = ^{
+        if (atomic_load(&sMetalShutdownInProgress)) return;
+        NSView *view = (__bridge NSView *)rawPtr;
+        if (view == nil) return;
+        NSWindow *w = view.window;
+        if (w == nil) return;
+
+        NSNumber *previousHeight =
+            objc_getAssociatedObject(w, &kTaoFullscreenOverlayHeightKey);
+        BOOL overlayEnabled = enabled == JNI_TRUE;
+        BOOL geometryChanged =
+            overlayEnabled &&
+            (previousHeight == nil || previousHeight.floatValue != titleBarHeight);
+
+        if (overlayEnabled) {
+            objc_setAssociatedObject(w, &kTaoFullscreenOverlayHeightKey,
+                                     @(titleBarHeight), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(w, &kTaoFullscreenOverlayOffsetKey,
+                                     @(offsetPt), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } else {
+            objc_setAssociatedObject(w, &kTaoFullscreenOverlayHeightKey, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(w, &kTaoFullscreenOverlayOffsetKey, nil,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+
+        if ((w.styleMask & NSWindowStyleMaskFullScreen) != 0) {
+            if (geometryChanged) {
+                NSNumber *storedHeight =
+                    objc_getAssociatedObject(w, &kTaoTitleBarHeightKey);
+                float fallbackHeight = storedHeight != nil
+                    ? storedHeight.floatValue
+                    : kMinHeightForFullSize;
+                removeFullScreenButtons(w);
+                installFullScreenButtons(w, fallbackHeight);
+            } else {
+                updateFullScreenButtonsPosition(w);
+            }
+        }
     };
     if ([NSThread isMainThread]) apply();
     else                          dispatch_async(dispatch_get_main_queue(), apply);
@@ -2961,6 +3450,43 @@ Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeDiagWindowRetai
     if ([NSThread isMainThread]) read();
     else                          dispatch_sync(dispatch_get_main_queue(), read);
     return count;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeDiagMovePointer(
+        JNIEnv *env, jclass clazz, jint x, jint y) {
+    if (!CGPreflightPostEventAccess()) return JNI_FALSE;
+    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+    CGEventRef event = CGEventCreateMouseEvent(source, kCGEventMouseMoved,
+                                              CGPointMake(x, y), kCGMouseButtonLeft);
+    if (event != NULL) {
+        CGEventPost(kCGSessionEventTap, event);
+        CFRelease(event);
+    }
+    if (source != NULL) CFRelease(source);
+    return event != NULL ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_nucleusframework_window_tao_ffi_NativeMetalBridge_nativeDiagClickPointer(
+        JNIEnv *env, jclass clazz) {
+    if (!CGPreflightPostEventAccess()) return JNI_FALSE;
+    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+    CGEventRef current = CGEventCreate(source);
+    if (current == NULL) {
+        if (source != NULL) CFRelease(source);
+        return JNI_FALSE;
+    }
+    CGPoint location = CGEventGetLocation(current);
+    CFRelease(current);
+    CGEventType types[] = { kCGEventLeftMouseDown, kCGEventLeftMouseUp };
+    for (NSUInteger i = 0; i < 2; i++) {
+        CGEventRef event = CGEventCreateMouseEvent(source, types[i], location, kCGMouseButtonLeft);
+        CGEventPost(kCGSessionEventTap, event);
+        CFRelease(event);
+    }
+    if (source != NULL) CFRelease(source);
+    return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL

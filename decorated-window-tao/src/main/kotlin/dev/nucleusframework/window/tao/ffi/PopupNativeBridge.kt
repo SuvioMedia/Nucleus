@@ -8,10 +8,8 @@ import dev.nucleusframework.core.runtime.NativeLibraryLoader
  * JNI bridge to the macOS popup panel helper (`macos/popup_panel.m`,
  * shipped as `libnucleus_tao_macos_popup.dylib`).
  *
- * Phase 1 of the Compose-popup-via-NSPanel architecture: lets us mint a
- * borderless transparent `NSPanel` attached as a child window of the
- * host `NSWindow` and visually verify its position. No Skia, no
- * Compose, no event forwarding yet — those come in subsequent phases.
+ * Creates borderless transparent popup panels, forwards input to Compose,
+ * and manages the optional solid-color scrim below each owned popup.
  *
  * Threading: every entry point must run on the macOS main thread (= Tao
  * event-loop thread = Compose dispatcher thread). The functions touch
@@ -31,10 +29,8 @@ internal object PopupNativeBridge {
 
     /**
      * Allocates a transparent borderless `NSPanel` attached as a child
-     * window of the `NSWindow` backing [parentNsView]. The Phase-1
-     * implementation paints the panel's content view solid red so the
-     * AppKit + JNI plumbing can be verified visually. Subsequent phases
-     * will replace the red layer with a `CAMetalLayer` + `ComposeScene`.
+     * window of the `NSWindow` backing [parentNsView]. Its content view is
+     * ready for a `CAMetalLayer` attached via `NativeMetalBridge`.
      *
      * Returns a JVM-retained `Long` that owns the panel; release via
      * [nativeRelease].
@@ -83,19 +79,30 @@ internal object PopupNativeBridge {
 
     /**
      * Detaches the panel from the parent NSWindow's child-window list,
-     * orders it out, and drops the explicit retain installed by
+     * removes its scrim, orders it out, and drops the explicit retain installed by
      * [nativeCreatePanel].
      */
     @JvmStatic
     external fun nativeRelease(panel: Long)
 
     /**
-     * Returns the panel's content `NSView` pointer. Subsequent phases
-     * will hand it to `NativeMetalBridge.nativeAttachOverlay` to wire
-     * up a transparent `CAMetalLayer` for Compose rendering.
+     * Returns the panel's content `NSView` pointer for
+     * `NativeMetalBridge.nativeAttachOverlay`.
      */
     @JvmStatic
     external fun nativeContentNsView(panel: Long): Long
+
+    /**
+     * Paints [argb] (sRGB) over the host window's content, below this popup.
+     * The scrim follows the host's geometry and never takes focus or pointer
+     * events. An alpha of zero removes it; ownerless panels have no scrim.
+     * [nativeRelease] also releases the scrim and its geometry observers.
+     */
+    @JvmStatic
+    external fun nativeSetScrimColor(
+        panel: Long,
+        argb: Int,
+    )
 
     // ── Phase 4: event forwarding & focus ────────────────────────────
 

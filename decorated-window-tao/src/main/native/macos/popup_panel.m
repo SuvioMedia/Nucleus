@@ -351,11 +351,97 @@ static jint scrollGesturePhase(NSEvent *event) {
 @property (nonatomic, strong) id outsideMonitor;           // local NSEvent monitor token
 @property (nonatomic, strong) id outsideGlobalMonitor;       // global NSEvent monitor token (standalone only)
 @property (nonatomic, strong) NSValue *outsideListenerVal;  // jobject global ref boxed
+@property (nonatomic, strong) NSPanel *scrimPanel;
+- (void)setScrimARGB:(uint32_t)argb;
+- (void)removeScrim;
 @end
 
 @implementation NucleusTaoPopupPanel
 - (BOOL)canBecomeKeyWindow  { return self.canKey; }
 - (BOOL)canBecomeMainWindow { return NO; }
+
+- (void)updateScrimFrame {
+    NSWindow *parent = self.parentHostWindow;
+    NSView *content = parent.contentView;
+    if (self.scrimPanel == nil || content == nil) return;
+    NSRect frame = [parent convertRectToScreen:[content convertRect:content.bounds toView:nil]];
+    [self.scrimPanel setFrame:frame display:YES];
+}
+
+- (void)hostGeometryChanged:(NSNotification *)notification {
+    (void)notification;
+    [self updateScrimFrame];
+}
+
+- (void)setScrimARGB:(uint32_t)argb {
+    NSWindow *parent = self.parentHostWindow;
+    if ((argb >> 24) == 0 || parent == nil) {
+        [self removeScrim];
+        return;
+    }
+    NSColor *color = [NSColor colorWithSRGBRed:((argb >> 16) & 0xff) / 255.0
+                                       green:((argb >> 8) & 0xff) / 255.0
+                                        blue:(argb & 0xff) / 255.0
+                                       alpha:(argb >> 24) / 255.0];
+    if (self.scrimPanel != nil) {
+        self.scrimPanel.backgroundColor = color;
+        return;
+    }
+
+    // A solid AppKit backing surface avoids another Metal device/context and
+    // stays above native views as well as the main Compose render target.
+    NucleusTaoPopupPanel *scrim = [[NucleusTaoPopupPanel alloc]
+        initWithContentRect:NSZeroRect
+                  styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+                    backing:NSBackingStoreBuffered
+                      defer:NO];
+    scrim.opaque = NO;
+    scrim.backgroundColor = color;
+    scrim.hasShadow = NO;
+    scrim.level = self.level;
+    scrim.hidesOnDeactivate = NO;
+    scrim.animationBehavior = NSWindowAnimationBehaviorNone;
+    scrim.releasedWhenClosed = NO;
+    scrim.ignoresMouseEvents = YES;
+    scrim.accessibilityElement = NO;
+    self.scrimPanel = scrim;
+    [self updateScrimFrame];
+    // Both surfaces must be children ABOVE the host. Attaching the scrim as
+    // a child BELOW the popup can put it behind the entire host window group.
+    // Reattach the popup after inserting its sibling scrim: orderWindow alone
+    // does not update AppKit's ordering of attached children reliably.
+    BOOL wasVisible = self.isVisible;
+    [parent addChildWindow:scrim ordered:NSWindowAbove];
+    [parent removeChildWindow:self];
+    [parent addChildWindow:self ordered:NSWindowAbove];
+    if (!wasVisible) {
+        [scrim orderOut:nil];
+        [self orderOut:nil];
+    }
+
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    for (NSNotificationName name in @[NSWindowDidResizeNotification,
+                                       NSWindowDidMoveNotification,
+                                       NSWindowDidChangeBackingPropertiesNotification]) {
+        [center addObserver:self selector:@selector(hostGeometryChanged:)
+                       name:name object:parent];
+    }
+}
+
+- (void)removeScrim {
+    if (self.scrimPanel == nil) return;
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    for (NSNotificationName name in @[NSWindowDidResizeNotification,
+                                       NSWindowDidMoveNotification,
+                                       NSWindowDidChangeBackingPropertiesNotification]) {
+        [center removeObserver:self name:name object:self.parentHostWindow];
+    }
+    NSPanel *scrim = self.scrimPanel;
+    self.scrimPanel = nil;
+    [scrim.parentWindow removeChildWindow:scrim];
+    [scrim orderOut:nil];
+    [scrim close];
+}
 
 - (BOOL)nucleusIsMouseEvent:(NSEvent *)event {
     switch (event.type) {
@@ -456,6 +542,16 @@ static NSRect to_screen_frame_ownerless(jint xPx, jint yPx, jint wPx, jint hPx) 
 /*  Package: dev.nucleusframework.window.tao                 */
 /*  Class:   PopupNativeBridge                                         */
 /* ================================================================== */
+
+JNIEXPORT void JNICALL
+Java_dev_nucleusframework_window_tao_ffi_PopupNativeBridge_nativeSetScrimColor(
+    JNIEnv *env, jclass clazz, jlong panelPtr, jint argb)
+{
+    (void)env; (void)clazz;
+    if (panelPtr == 0) return;
+    NucleusTaoPopupPanel *panel = (__bridge NucleusTaoPopupPanel *)(void *)(uintptr_t)panelPtr;
+    [panel setScrimARGB:(uint32_t)argb];
+}
 
 JNIEXPORT jlong JNICALL
 Java_dev_nucleusframework_window_tao_ffi_PopupNativeBridge_nativeCreatePanel(
@@ -598,6 +694,7 @@ Java_dev_nucleusframework_window_tao_ffi_PopupNativeBridge_nativeOrderFront(
     if (panelPtr == 0) return;
     NucleusTaoPopupPanel *panel = (__bridge NucleusTaoPopupPanel *)(void *)(uintptr_t)panelPtr;
     [panel orderFrontRegardless];
+    [panel.scrimPanel orderWindow:NSWindowBelow relativeTo:panel.windowNumber];
     // Standalone tray popups take key focus on show: a makeKeyWindow issued
     // while the panel was still ordered out (e.g. from nativeSetFocusable at
     // setup time) is a no-op, so it must be (re)applied here. Non-activating
@@ -614,6 +711,7 @@ Java_dev_nucleusframework_window_tao_ffi_PopupNativeBridge_nativeOrderOut(
     (void)env; (void)clazz;
     if (panelPtr == 0) return;
     NucleusTaoPopupPanel *panel = (__bridge NucleusTaoPopupPanel *)(void *)(uintptr_t)panelPtr;
+    [panel.scrimPanel orderOut:nil];
     [panel orderOut:nil];
 }
 
@@ -916,6 +1014,7 @@ Java_dev_nucleusframework_window_tao_ffi_PopupNativeBridge_nativeRelease(
     (void)clazz;
     if (panelPtr == 0) return;
     NucleusTaoPopupPanel *panel = (__bridge_transfer NucleusTaoPopupPanel *)(void *)(uintptr_t)panelPtr;
+    [panel removeScrim];
 
     // Drop event callback global ref.
     NucleusTaoPopupContent *content = (NucleusTaoPopupContent *)panel.contentView;

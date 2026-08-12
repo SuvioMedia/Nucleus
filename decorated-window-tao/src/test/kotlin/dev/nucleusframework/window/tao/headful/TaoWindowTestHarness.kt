@@ -3,6 +3,7 @@ package dev.nucleusframework.window.tao.headful
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.window.WindowState
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.tao.TaoDecoratedDialogScope
 import dev.nucleusframework.window.tao.TaoDecoratedWindowScope
 import dev.nucleusframework.window.tao.TaoWindow
@@ -67,6 +68,8 @@ internal class TaoWindowTestCase(
      */
     val dialogSize: DpSize? = null,
     val dialogContent: (@Composable TaoDecoratedDialogScope.() -> Unit)? = null,
+    /** Creation-time output range requested for this case's real window. */
+    val dynamicRangeMode: WindowDynamicRangeMode = WindowDynamicRangeMode.STANDARD,
     /** Optional extra window content composed inside the DecoratedWindow. */
     val content: @Composable TaoDecoratedWindowScope.() -> Unit = {},
     val driver: suspend TaoWindowTestScope.() -> Unit,
