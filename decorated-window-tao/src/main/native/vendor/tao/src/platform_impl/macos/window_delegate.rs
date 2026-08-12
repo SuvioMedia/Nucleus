@@ -593,7 +593,27 @@ extern "C" fn window_will_use_fullscreen_presentation_options(
           .bits();
       }
       trace!("Unlocked shared state in `window_will_use_fullscreen_presentation_options`");
-    })
+    });
+    // PATCH(nucleus): A Compose-drawn fullscreen title bar opts into a real
+    // AppKit auto-hidden toolbar. AppKit then treats the system menu and the
+    // window chrome as one rollover unit, so the traffic lights cannot retract
+    // while the pointer crosses from the menu bar onto them. Exclusive mode
+    // uses HideMenuBar above and must not receive AutoHideToolbar.
+    if options & NSApplicationPresentationOptions::AutoHideMenuBar.bits() != 0 {
+      let supports_nucleus_fullscreen_controls: BOOL = unsafe {
+        msg_send![
+          &state.ns_window,
+          respondsToSelector: sel!(nucleusTaoUsesNewFullscreenControls)
+        ]
+      };
+      if supports_nucleus_fullscreen_controls == YES {
+        let uses_nucleus_fullscreen_controls: BOOL =
+          unsafe { msg_send![&state.ns_window, nucleusTaoUsesNewFullscreenControls] };
+        if uses_nucleus_fullscreen_controls == YES {
+          options |= NSApplicationPresentationOptions::AutoHideToolbar.bits();
+        }
+      }
+    }
   });
 
   options

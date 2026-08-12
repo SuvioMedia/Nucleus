@@ -111,6 +111,14 @@ internal object NativeTaoLinuxTextureBridge {
     @JvmStatic
     external fun nativeIsDmaBufImportSupported(): Boolean
 
+    /** `/dev/dri/renderD*` node backing the EGL display current on this thread. */
+    @JvmStatic
+    external fun nativeCurrentRenderNode(): String?
+
+    /** Importable, non-external-only modifiers for [fourcc] on the current EGL display. */
+    @JvmStatic
+    external fun nativeDmaBufModifiers(fourcc: Int): LongArray?
+
     /** Whether it also advertises `EGL_ANDROID_native_fence_sync`. */
     @JvmStatic
     external fun nativeIsNativeFenceSupported(): Boolean
@@ -126,6 +134,14 @@ internal object NativeTaoLinuxTextureBridge {
      */
     @JvmStatic
     external fun nativeWaitFence(fenceFd: Int): Boolean
+
+    /**
+     * Exports a fence for all GL work submitted on the current context. When
+     * native fence sync is unavailable, finishes that work synchronously and
+     * returns `-1`, preserving the same buffer-reuse safety contract.
+     */
+    @JvmStatic
+    external fun nativeCreateReleaseFence(): Int
 
     /** `close(2)` for a fence fd Kotlin owns — the JDK cannot close a bare descriptor. */
     @JvmStatic

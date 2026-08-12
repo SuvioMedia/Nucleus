@@ -64,6 +64,7 @@ internal fun LinuxTextureView(
     }
 
     val sampling = remember(filterQuality) { samplingFor(filterQuality) }
+    val colorPaint = rememberExternalTextureColorPaint(source.colorInfo)
     Box(
         modifier.drawBehind {
             // Snapshot read of the frame stamp: markFrameAvailable() invalidates
@@ -74,8 +75,9 @@ internal fun LinuxTextureView(
             imported.onDrawPass(controller, stamp)
             val dst = externalTextureDstRect(imported.srcRect, contentScale, alignment)
             clipRect {
-                drawIntoCanvas { canvas -> imported.draw(canvas.skiaCanvas, dst, sampling) }
+                drawIntoCanvas { canvas -> imported.draw(canvas.skiaCanvas, dst, sampling, colorPaint) }
             }
+            if (controller != null) host.markTextureFrameSampled(controller)
         },
     )
 }
@@ -140,10 +142,11 @@ internal class LinuxImportedTexture(
         canvas: Canvas,
         dst: Rect,
         sampling: SamplingMode,
+        colorPaint: Paint? = null,
     ) {
         val painter = this.painter
         if (painter == null) {
-            canvas.drawImageRect(planes[0].image, srcRect, dst, sampling, null, true)
+            canvas.drawImageRect(planes[0].image, srcRect, dst, sampling, colorPaint, true)
             return
         }
         if (dst.width <= 0f || dst.height <= 0f) return
@@ -275,7 +278,7 @@ private fun importEglImage(
             return@withContextCurrent null
         }
         val plane =
-            adoptPackedPlane(host, handle, source.widthPx, source.heightPx)
+            adoptPackedPlane(host, handle, source.widthPx, source.heightPx, source.colorInfo)
                 ?: return@withContextCurrent null
         LinuxImportedTexture(host, listOf(plane), source.widthPx, source.heightPx, painter = null)
     }

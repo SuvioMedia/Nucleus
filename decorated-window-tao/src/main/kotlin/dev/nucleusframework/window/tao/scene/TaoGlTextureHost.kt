@@ -1,7 +1,11 @@
 package dev.nucleusframework.window.tao.scene
 
 import androidx.compose.runtime.ProvidableCompositionLocal
+import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
+import dev.nucleusframework.window.tao.TextureViewController
+import dev.nucleusframework.window.tao.TextureViewHostCapabilities
+import dev.nucleusframework.window.tao.UnavailableTextureViewHostCapabilitiesState
 import dev.nucleusframework.window.tao.ffi.NativeTaoEglBridge
 import dev.nucleusframework.window.tao.ffi.NativeTaoLinuxTextureBridge
 import org.jetbrains.skia.DirectContext
@@ -27,8 +31,24 @@ import org.jetbrains.skia.DirectContext
  * the teardown paths that run outside a render pass.
  */
 internal interface TaoGlTextureHost {
+    val textureViewHostCapabilities: State<TextureViewHostCapabilities>
+        get() = UnavailableTextureViewHostCapabilitiesState
+
     /** Skia context of this surface. */
     val directContext: DirectContext
+
+    /** Records a texture frame sampled by the current scene render. */
+    fun markTextureFrameSampled(controller: TextureViewController) {
+        LinuxTextureReleaseFenceRegistry.mark(this, controller)
+    }
+
+    /**
+     * Publishes release fences after Skia submitted every sampling command for
+     * the frame. Must run with this host's EGL context current.
+     */
+    fun publishTextureReleaseFences() {
+        LinuxTextureReleaseFenceRegistry.publish(this)
+    }
 
     /**
      * Runs [block] with this surface's EGL context current, and returns its
@@ -38,6 +58,40 @@ internal interface TaoGlTextureHost {
      * `eglGetProcAddress` dereference thread-local driver state and crash.
      */
     fun <T> withContextCurrent(block: () -> T): T?
+}
+
+/**
+ * Pending sampled frames are kept outside anonymous host implementations so
+ * window, popup and standalone surfaces all share the exact same lifecycle.
+ * Weak host keys prevent an abandoned surface from pinning its GPU context.
+ */
+private object LinuxTextureReleaseFenceRegistry {
+    private val pending =
+        java.util
+            .WeakHashMap<TaoGlTextureHost, java.util.IdentityHashMap<TextureViewController, Unit>>()
+
+    fun mark(
+        host: TaoGlTextureHost,
+        controller: TextureViewController,
+    ) {
+        synchronized(pending) {
+            pending.getOrPut(host) { java.util.IdentityHashMap() }[controller] = Unit
+        }
+    }
+
+    fun publish(host: TaoGlTextureHost) {
+        val controllers =
+            synchronized(pending) {
+                pending
+                    .remove(host)
+                    ?.keys
+                    ?.toList()
+                    .orEmpty()
+            }
+        controllers.forEach { controller ->
+            controller.replaceReleaseFence(NativeTaoLinuxTextureBridge.nativeCreateReleaseFence())
+        }
+    }
 }
 
 /**

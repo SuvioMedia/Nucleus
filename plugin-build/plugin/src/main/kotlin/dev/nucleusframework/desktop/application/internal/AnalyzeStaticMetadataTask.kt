@@ -10,6 +10,7 @@ import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.Property
+import org.gradle.api.provider.SetProperty
 import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
@@ -60,6 +61,14 @@ abstract class AnalyzeStaticMetadataTask : DefaultTask() {
     @get:Input
     abstract val reflectionForProjectClasses: Property<Boolean>
 
+    /** Type/package prefixes omitted from generated reflection and JNI metadata. */
+    @get:Input
+    abstract val excludedTypePrefixes: SetProperty<String>
+
+    /** Resources packaged next to the executable and therefore not embedded in it. */
+    @get:Input
+    abstract val externallyPackagedResourceGlobs: SetProperty<String>
+
     /** Output directory where reachability-metadata.json is written. */
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
@@ -89,6 +98,14 @@ abstract class AnalyzeStaticMetadataTask : DefaultTask() {
         val orphanEnabled = detectOrphanProjectClasses.getOrElse(true)
         val allProjectEnabled = reflectionForProjectClasses.getOrElse(false)
         val projectDirs = projectClassDirs.files.filter { it.isDirectory && it.exists() }
+        val typeExclusions = excludedTypePrefixes.getOrElse(emptySet())
+        val externalResources = externallyPackagedResourceGlobs.getOrElse(emptySet())
+
+        if (typeExclusions.isNotEmpty()) {
+            logger.lifecycle(
+                "Static bytecode analysis: excluding ${typeExclusions.size} configured type/package prefixes",
+            )
+        }
 
         val result =
             BytecodeAnalyzer.analyzeClasspath(
@@ -96,6 +113,8 @@ abstract class AnalyzeStaticMetadataTask : DefaultTask() {
                 projectClassDirs = projectDirs,
                 detectOrphanProjectClasses = orphanEnabled,
                 reflectionForProjectClasses = allProjectEnabled,
+                excludedTypePrefixes = typeExclusions,
+                excludedResourceGlobs = externalResources,
             )
 
         val projectEntries = result.projectClassEntries
