@@ -1,6 +1,7 @@
 package dev.nucleusframework.window.tao.headful
 
 import androidx.compose.runtime.Composable
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.tao.TaoDecoratedWindowScope
 import dev.nucleusframework.window.tao.TaoWindow
 import kotlinx.coroutines.delay
@@ -42,6 +43,8 @@ internal class TaoWindowTestCase(
      * window instead of being drawn inline. Creation-time only.
      */
     val nativePopupLayers: Boolean = false,
+    /** Creation-time output range requested for this case's real window. */
+    val dynamicRangeMode: WindowDynamicRangeMode = WindowDynamicRangeMode.STANDARD,
     /** Optional extra window content composed inside the DecoratedWindow. */
     val content: @Composable TaoDecoratedWindowScope.() -> Unit = {},
     val driver: suspend TaoWindowTestScope.() -> Unit,
