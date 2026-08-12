@@ -1,10 +1,13 @@
 package dev.nucleusframework.window.tao.popup
 
+import androidx.compose.runtime.State
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.pointer.PointerButton
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import dev.nucleusframework.window.WindowDynamicRangeMode
 import dev.nucleusframework.window.tao.TaoWindow
+import dev.nucleusframework.window.tao.TextureViewHostCapabilities
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -25,6 +28,11 @@ internal interface TaoPopupHostLinux {
 
     /** Backing-scale factor (logical→physical multiplier). */
     val scale: Float
+
+    /** Color mode inherited by native popup composition surfaces. */
+    val dynamicRangeMode: WindowDynamicRangeMode get() = WindowDynamicRangeMode.STANDARD
+
+    val textureViewHostCapabilities: State<TextureViewHostCapabilities>
 
     /** Host window's content size in physical pixels. */
     val parentWindowSize: IntSize

@@ -106,11 +106,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            ./gradlew :examples:jewel-demo:packageGraalvmDeb -PnativeMarch=compatibility --no-daemon --stacktrace
+            ./gradlew :examples:jewel-demo:packageGraalvmDeb -PnativeMarch=compatibility \
+              "-Pnucleus.prebuiltNativeArtifacts=true" --no-daemon --stacktrace
           elif [ "$RUNNER_OS" = "macOS" ]; then
-            ./gradlew :examples:jewel-demo:packageGraalvmDmg -PnativeMarch=compatibility --no-daemon --stacktrace
+            ./gradlew :examples:jewel-demo:packageGraalvmDmg -PnativeMarch=compatibility \
+              "-Pnucleus.prebuiltNativeArtifacts=true" --no-daemon --stacktrace
           elif [ "$RUNNER_OS" = "Windows" ]; then
-            ./gradlew :examples:jewel-demo:packageGraalvmNsis -PnativeMarch=compatibility --no-daemon --stacktrace
+            ./gradlew :examples:jewel-demo:packageGraalvmNsis -PnativeMarch=compatibility \
+              "-Pnucleus.prebuiltNativeArtifacts=true" --no-daemon --stacktrace
           fi
 
       - name: Upload GraalVM artifacts

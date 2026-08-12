@@ -45,15 +45,60 @@ public object NativeLibraryLoader {
         callerClass: Class<*>,
         resourcePrefix: String = "/nucleus/native",
         sidecarFiles: List<String> = emptyList(),
+    ): Boolean =
+        load(
+            libraryName = libraryName,
+            callerClass = callerClass,
+            resourcePrefix = resourcePrefix,
+            sidecarFiles = sidecarFiles,
+            preloadSidecars = false,
+        )
+
+    /**
+     * Loads a content-addressed native runtime set.
+     *
+     * When [preloadSidecars] is true, every extracted sidecar is loaded by its
+     * absolute path before [libraryName]. This is required when the main
+     * library later resolves optional entry points from a dependency by bare
+     * name: preloading prevents an unrelated module with the same filename on
+     * `PATH` from being selected instead.
+     */
+    public fun load(
+        libraryName: String,
+        callerClass: Class<*>,
+        resourcePrefix: String,
+        sidecarFiles: List<String>,
+        preloadSidecars: Boolean,
     ): Boolean {
         synchronized(lock) {
             if (libraryName in loadedLibraries) return true
 
-            // Try system library path first (packaged app with native libs on java.library.path)
+            // A main library with sidecars is a versioned runtime set. Load that
+            // content-addressed set first so an unrelated DLL with the same bare
+            // name on PATH cannot split the set (for example, libEGL from one
+            // ANGLE build with libGLESv2 from another). Ordinary standalone
+            // libraries keep the historical system-first lookup used by
+            // packaged applications.
+            if (sidecarFiles.isNotEmpty() &&
+                tryJarExtraction(
+                    libraryName,
+                    callerClass,
+                    resourcePrefix,
+                    sidecarFiles,
+                    preloadSidecars,
+                )
+            ) {
+                return true
+            }
             if (trySystemLoad(libraryName)) return true
-
-            // Fallback: extract from JAR with persistent cache
-            return tryJarExtraction(libraryName, callerClass, resourcePrefix, sidecarFiles)
+            return sidecarFiles.isEmpty() &&
+                tryJarExtraction(
+                    libraryName,
+                    callerClass,
+                    resourcePrefix,
+                    sidecarFiles,
+                    preloadSidecars,
+                )
         }
     }
 
@@ -72,6 +117,7 @@ public object NativeLibraryLoader {
         callerClass: Class<*>,
         resourcePrefix: String,
         sidecarFiles: List<String>,
+        preloadSidecars: Boolean,
     ): Boolean {
         try {
             val platform = resolvePlatform()
@@ -102,14 +148,23 @@ public object NativeLibraryLoader {
             val cacheDir = resolveCacheDir().resolve(platform.resourceDir).resolve(fingerprint)
             Files.createDirectories(cacheDir)
 
-            for ((sidecar, url) in sidecarUrls) {
-                extractIfAbsent(url, cacheDir.resolve(sidecar))
-            }
+            val sidecarPaths =
+                sidecarUrls.map { (sidecar, url) ->
+                    extractIfAbsent(url, cacheDir.resolve(sidecar))
+                }
             val loadPath = extractIfAbsent(resourceUrl, cacheDir.resolve(fileName))
 
+            if (preloadSidecars) {
+                sidecarPaths.forEach { sidecarPath ->
+                    System.load(sidecarPath.toAbsolutePath().toString())
+                }
+            }
             System.load(loadPath.toAbsolutePath().toString())
             loadedLibraries += libraryName
             return true
+        } catch (e: UnsatisfiedLinkError) {
+            logger.log(Level.WARNING, "Failed to load $libraryName native library", e)
+            return false
         } catch (e: Exception) {
             logger.log(Level.WARNING, "Failed to load $libraryName native library", e)
             return false
