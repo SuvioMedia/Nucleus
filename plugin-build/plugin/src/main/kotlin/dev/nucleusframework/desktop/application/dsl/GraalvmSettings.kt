@@ -127,6 +127,20 @@ abstract class GraalvmSettings
         // Strictly opt-in — never a default. Prefer [detectOrphanProjectClasses] first. See #441.
         val reflectionForProjectClasses: Property<Boolean> = objects.notNullProperty(false)
 
+        // Type or package prefixes excluded from Nucleus-generated reflection/JNI metadata,
+        // including static bytecode analysis and the built-in per-library metadata. Matching is
+        // boundary-aware: `com.example.windows` excludes that package,
+        // and `com.example.WindowsBridge` excludes that class plus its nested classes. The
+        // corresponding bytecode is skipped while scanning so an excluded platform
+        // implementation cannot register unrelated reflective types as a side effect.
+        //
+        // This does not remove classes from the runtime classpath. It only prevents static
+        // metadata from making implementations that are impossible on the current target
+        // reachable in the native image. Keep the list explicit and target-specific; an
+        // incorrect exclusion can remove JNI/reflection metadata required at runtime.
+        val metadataExcludedTypePrefixes: SetProperty<String> =
+            objects.setProperty(String::class.java).convention(emptySet())
+
         // Extra `native-image` arguments appended verbatim, after everything the plugin derives.
         //
         // Nucleus deliberately leaves the SLF4J lifecycle alone: the API and the app-selected

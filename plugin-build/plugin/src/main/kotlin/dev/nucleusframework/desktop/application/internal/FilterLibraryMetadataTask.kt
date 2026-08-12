@@ -1,11 +1,14 @@
 package dev.nucleusframework.desktop.application.internal
 
+import dev.nucleusframework.desktop.application.internal.analyzer.TypePrefixMatcher
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.SetProperty
 import org.gradle.api.tasks.CacheableTask
+import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
@@ -29,6 +32,10 @@ abstract class FilterLibraryMetadataTask : DefaultTask() {
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val runtimeClasspath: ConfigurableFileCollection
 
+    /** Type/package prefixes omitted from the merged per-library metadata. */
+    @get:Input
+    abstract val excludedTypePrefixes: SetProperty<String>
+
     /** Output directory where the merged `reachability-metadata.json` is written. */
     @get:OutputDirectory
     abstract val outputDir: DirectoryProperty
@@ -36,6 +43,7 @@ abstract class FilterLibraryMetadataTask : DefaultTask() {
     @TaskAction
     fun filter() {
         val classpathPackages = buildClasspathPackageIndex(runtimeClasspath.files)
+        val excludedTypes = TypePrefixMatcher(excludedTypePrefixes.getOrElse(emptySet()))
 
         val metadataDir = "nucleus/graalvm/library-metadata"
         val index =
@@ -77,7 +85,7 @@ abstract class FilterLibraryMetadataTask : DefaultTask() {
 
             @Suppress("UNCHECKED_CAST")
             val reflection = root["reflection"] as? List<Any?>
-            if (reflection != null) mergedReflection.addAll(reflection)
+            if (reflection != null) mergedReflection.addAll(filterMetadataEntries(reflection, excludedTypes))
 
             @Suppress("UNCHECKED_CAST")
             val resources = root["resources"] as? List<Any?>
@@ -98,3 +106,33 @@ abstract class FilterLibraryMetadataTask : DefaultTask() {
         )
     }
 }
+
+/** Filters owners and method signatures while retaining non-type metadata objects verbatim. */
+internal fun filterMetadataEntries(
+    entries: List<Any?>,
+    excludedTypes: TypePrefixMatcher,
+): List<Any?> =
+    entries.mapNotNull { rawEntry ->
+        @Suppress("UNCHECKED_CAST")
+        val entry = rawEntry as? Map<String, Any?> ?: return@mapNotNull rawEntry
+        val type = entry["type"] as? String ?: return@mapNotNull rawEntry
+        if (excludedTypes.matches(type)) return@mapNotNull null
+
+        @Suppress("UNCHECKED_CAST")
+        val methods = entry["methods"] as? List<Any?> ?: return@mapNotNull rawEntry
+        val retainedMethods =
+            methods.filterNot { method ->
+                @Suppress("UNCHECKED_CAST")
+                val methodMap = method as? Map<String, Any?> ?: return@filterNot false
+                @Suppress("UNCHECKED_CAST")
+                val parameterTypes = methodMap["parameterTypes"] as? List<String> ?: return@filterNot false
+                parameterTypes.any(excludedTypes::matches)
+            }
+
+        val hasRegistrationOutsideMethods = entry.keys.any { it !in setOf("type", "methods", "condition") }
+        if (methods.isNotEmpty() && retainedMethods.isEmpty() && !hasRegistrationOutsideMethods) {
+            null
+        } else {
+            entry.toMutableMap().apply { this["methods"] = retainedMethods }
+        }
+    }

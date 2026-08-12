@@ -400,6 +400,7 @@ internal class TaoStandalonePopupHostLinux : StandalonePopupHost {
                 heightPx = heightPx,
                 directContext = ctx,
                 clearColorArgb = 0x00000000,
+                afterFlush = { glTextureHostState.value?.publishTextureReleaseFences() },
                 present = { NativeTaoEglBridge.nativePresent(attachment) },
             ) { canvas, _ ->
                 bundle.render(canvas, frameNs)

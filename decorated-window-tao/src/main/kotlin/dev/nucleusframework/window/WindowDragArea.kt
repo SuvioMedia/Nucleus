@@ -21,6 +21,8 @@ import androidx.compose.ui.unit.IntSize
 import dev.nucleusframework.core.runtime.Platform
 import dev.nucleusframework.window.tao.LocalTaoWindow
 import dev.nucleusframework.window.tao.TaoWindow
+import dev.nucleusframework.window.tao.ffi.NativeMetalBridge
+import dev.nucleusframework.window.tao.ffi.NativeTaoBridge
 
 /**
  * Declares this component as a window drag region: an unconsumed primary
@@ -85,16 +87,49 @@ public fun Modifier.windowDragArea(
                         )
                 if (isPrimaryOrTouch && this.currentEvent.changes.any { !it.isConsumed }) {
                     val now = System.currentTimeMillis()
-                    if (now - lastPress in
-                        viewConfig.doubleTapMinTimeMillis..viewConfig.doubleTapTimeoutMillis &&
+                    val hasMacNativeBridge =
+                        Platform.Current == Platform.MacOS && NativeMetalBridge.isLoaded
+                    val macNativeClickCount =
+                        if (hasMacNativeBridge) {
+                            NativeTaoBridge
+                                .nativeNsViewHandle(window.handle)
+                                .takeIf { it != 0L }
+                                ?.let(NativeMetalBridge::nativeCurrentEventClickCount)
+                                ?: 0
+                        } else {
+                            0
+                        }
+                    val macDoubleClickTimeoutMillis =
+                        if (hasMacNativeBridge) {
+                            NativeMetalBridge.nativeDoubleClickIntervalMillis().coerceAtLeast(1L)
+                        } else {
+                            0L
+                        }
+                    val elapsed = now - lastPress
+                    val isDoubleClick =
+                        when {
+                            // AppKit has already applied the user's system double-click
+                            // interval and spatial tolerance to NSEvent.clickCount. Prefer
+                            // that native decision over Compose's mobile-oriented timeout.
+                            macNativeClickCount > 0 -> macNativeClickCount == 2
+                            hasMacNativeBridge -> elapsed in 1L..macDoubleClickTimeoutMillis
+                            else ->
+                                elapsed in
+                                    viewConfig.doubleTapMinTimeMillis..viewConfig.doubleTapTimeoutMillis
+                        }
+                    if (isDoubleClick &&
                         (window.isMaximized || window.isResizable)
                     ) {
                         window.setMaximized(!window.isMaximized)
                         // Cancel any in-flight touch drag armed with the
                         // pre-toggle maximize state.
                         window.cancelWindowsTitleBarTouchDrag()
+                        // A third click belongs to the same AppKit click sequence;
+                        // don't let the timestamp fallback treat it as a new pair.
+                        lastPress = 0L
+                    } else {
+                        lastPress = now
                     }
-                    lastPress = now
                 }
             }
     }

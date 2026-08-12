@@ -671,6 +671,7 @@ internal fun JvmApplicationContext.configureGraalvmApplication() {
                     task.metadataZipFiles.from(metadataZipConfig)
                     if (runtimeCfg != null) {
                         task.runtimeClasspath.from(runtimeCfg)
+                        task.dependsOn(runtimeCfg)
                     }
                 }
             }
@@ -695,8 +696,17 @@ internal fun JvmApplicationContext.configureGraalvmApplication() {
                     task.outputDir.set(staticMetadataDir)
                     task.detectOrphanProjectClasses.set(graalvm.detectOrphanProjectClasses)
                     task.reflectionForProjectClasses.set(graalvm.reflectionForProjectClasses)
+                    task.excludedTypePrefixes.set(graalvm.metadataExcludedTypePrefixes)
+                    task.externallyPackagedResourceGlobs.add(
+                        when (currentOS) {
+                            OS.MacOS -> "libskiko-${currentOS.id}-${currentArch.id}.dylib"
+                            OS.Windows -> "skiko-${currentOS.id}-${currentArch.id}.dll"
+                            OS.Linux -> "libskiko-${currentOS.id}-${currentArch.id}.so"
+                        },
+                    )
                     if (runtimeCfg != null) {
                         task.runtimeClasspath.from(runtimeCfg)
+                        task.dependsOn(runtimeCfg)
                     }
                     // Project class dirs for orphan / project-class detectors (#441).
                     // Resolve from the application target's compilation output so KMP
@@ -723,8 +733,10 @@ internal fun JvmApplicationContext.configureGraalvmApplication() {
                         "Filter and merge per-library GraalVM metadata based on runtime classpath"
                     task.group = NUCLEUS_TASK_GROUP
                     task.outputDir.set(libraryMetadataDir)
+                    task.excludedTypePrefixes.set(graalvm.metadataExcludedTypePrefixes)
                     if (runtimeCfg != null) {
                         task.runtimeClasspath.from(runtimeCfg)
+                        task.dependsOn(runtimeCfg)
                     }
                 }
             }
@@ -789,6 +801,7 @@ internal fun JvmApplicationContext.configureGraalvmApplication() {
 
                 if (runtimeCfg != null) {
                     task.runtimeClasspath.from(runtimeCfg)
+                    task.dependsOn(runtimeCfg)
                 }
                 task.metadataRepoDirsFile.set(project.layout.file(metadataRepoDirsFile.map { it.asFile }))
                 task.staticAnalysisDir.from(staticMetadataDir)
