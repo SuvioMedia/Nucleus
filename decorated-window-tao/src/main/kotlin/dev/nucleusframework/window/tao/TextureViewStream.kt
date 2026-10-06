@@ -80,6 +80,11 @@ public class TextureViewStreamController : AutoCloseable {
     private val lock = Any()
     private val acquiredFrames = IdentityHashMap<TextureViewFrame, Int>()
     private val pendingReleaseFences = IdentityHashMap<TextureViewFrame, Int>()
+
+    // Ownership must observe the latest producer write, even inside an older Compose snapshot.
+    // currentFrame is only the UI notification; it is not an ownership ledger.
+    private var latestFrame: TextureViewFrame? = null
+
     private var consumerToken: Any? = null
     private var closed = false
 
@@ -90,7 +95,8 @@ public class TextureViewStreamController : AutoCloseable {
         synchronized(lock) {
             check(!closed) { "TextureViewStreamController is closed" }
             frame.claimForSubmission()
-            val previous = currentFrame.value
+            val previous = latestFrame
+            latestFrame = frame
             currentFrame.value = frame
             if (previous != null && !acquiredFrames.containsKey(previous)) {
                 skipped = previous
@@ -122,13 +128,20 @@ public class TextureViewStreamController : AutoCloseable {
             if (
                 closed ||
                 consumerToken !== token ||
-                currentFrame.value !== frame ||
+                latestFrame !== frame ||
                 frame.isReleased
             ) {
                 return@synchronized false
             }
             acquiredFrames[frame] = (acquiredFrames[frame] ?: 0) + 1
             true
+        }
+
+    /** Selects and leases one live frame under the producer lock, regardless of Compose snapshot age. */
+    internal fun acquireLatestFrame(token: Any): TextureViewFrame? =
+        synchronized(lock) {
+            val frame = latestFrame ?: return@synchronized null
+            if (acquireFrame(token, frame)) frame else null
         }
 
     internal fun releaseFrame(
@@ -148,7 +161,7 @@ public class TextureViewStreamController : AutoCloseable {
                 rememberReleaseFence(frame, releaseFenceFd)
             } else {
                 acquiredFrames.remove(frame)
-                release = closed || currentFrame.value !== frame
+                release = closed || latestFrame !== frame
                 if (release) {
                     fenceToRelease = newestReleaseFence(takePendingReleaseFence(frame), releaseFenceFd)
                 } else {
@@ -166,9 +179,10 @@ public class TextureViewStreamController : AutoCloseable {
         synchronized(lock) {
             if (consumerToken !== token) return
             consumerToken = null
-            currentFrame.value?.takeUnless(acquiredFrames::containsKey)?.let { frame ->
+            latestFrame?.takeUnless(acquiredFrames::containsKey)?.let { frame ->
                 release += frame to takePendingReleaseFence(frame)
             }
+            latestFrame = null
             currentFrame.value = null
         }
         releaseIdentityDistinct(release)
@@ -185,7 +199,8 @@ public class TextureViewStreamController : AutoCloseable {
         var releaseFence = NO_FENCE
         synchronized(lock) {
             if (closed) return
-            val current = currentFrame.value
+            val current = latestFrame
+            latestFrame = null
             currentFrame.value = null
             if (current != null && !acquiredFrames.containsKey(current)) {
                 release = current
@@ -202,9 +217,10 @@ public class TextureViewStreamController : AutoCloseable {
             if (closed) return
             closed = true
             consumerToken = null
-            currentFrame.value?.takeUnless(acquiredFrames::containsKey)?.let { frame ->
+            latestFrame?.takeUnless(acquiredFrames::containsKey)?.let { frame ->
                 release += frame to takePendingReleaseFence(frame)
             }
+            latestFrame = null
             currentFrame.value = null
         }
         releaseIdentityDistinct(release)
@@ -263,24 +279,49 @@ public fun TextureView(
     contentScale: ContentScale = ContentScale.FillBounds,
     alignment: Alignment = Alignment.Center,
 ) {
+    TextureViewStreamContent(streamController, modifier, filterQuality, contentScale, alignment, null)
+}
+
+/** Draws a rotating packed RGB GPU buffer with a custom image shader. */
+@Composable
+public fun TextureView(
+    streamController: TextureViewStreamController,
+    imageRenderer: TextureViewImageRenderer,
+    modifier: Modifier = Modifier,
+    filterQuality: FilterQuality = FilterQuality.Low,
+    contentScale: ContentScale = ContentScale.FillBounds,
+    alignment: Alignment = Alignment.Center,
+) {
+    TextureViewStreamContent(streamController, modifier, filterQuality, contentScale, alignment, imageRenderer)
+}
+
+@Composable
+private fun TextureViewStreamContent(
+    streamController: TextureViewStreamController,
+    modifier: Modifier,
+    filterQuality: FilterQuality,
+    contentScale: ContentScale,
+    alignment: Alignment,
+    imageRenderer: TextureViewImageRenderer?,
+) {
     val consumer = remember(streamController) { TextureViewStreamConsumerLease(streamController) }
-    val frame = streamController.currentFrame.value
+    // Observe Compose state to request a new lease, but acquire the latest frame atomically.
+    // The producer may already have replaced the frame visible in this composition's snapshot.
+    val observedFrame = streamController.currentFrame.value
+    val frameLease = remember(consumer, observedFrame) { TextureViewStreamFrameLease(streamController, consumer.token) }
+    val frame = frameLease.frame
     if (frame == null) {
         Box(modifier)
         return
     }
-    val frameLease = remember(consumer, frame) { TextureViewStreamFrameLease(streamController, consumer.token, frame) }
-    if (!frameLease.acquired) {
-        Box(modifier)
-        return
-    }
-    TextureView(
+    TextureViewContent(
         source = frame.source,
         modifier = modifier,
         controller = frameLease.frameController,
         filterQuality = filterQuality,
         contentScale = contentScale,
         alignment = alignment,
+        imageRenderer = imageRenderer,
     )
 }
 
@@ -307,11 +348,10 @@ private class TextureViewStreamConsumerLease(
 private class TextureViewStreamFrameLease(
     private val streamController: TextureViewStreamController,
     token: Any,
-    private val frame: TextureViewFrame,
 ) : RememberObserver {
-    val acquired: Boolean = streamController.acquireFrame(token, frame)
+    val frame: TextureViewFrame? = streamController.acquireLatestFrame(token)
     val frameController: TextureViewController? =
-        if (acquired) {
+        if (frame != null) {
             TextureViewController().also { it.markFrameAvailable(frame.takeAcquireFence()) }
         } else {
             null
@@ -324,7 +364,7 @@ private class TextureViewStreamFrameLease(
     override fun onAbandoned() = release()
 
     private fun release() {
-        if (!acquired) return
+        val frame = frame ?: return
         val releaseFenceFd = frameController?.takeReleaseFence() ?: NO_FENCE
         frameController?.releaseAcquireFence()
         streamController.releaseFrame(frame, releaseFenceFd)

@@ -1,12 +1,67 @@
 package dev.nucleusframework.window.tao
 
+import androidx.compose.runtime.snapshots.Snapshot
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class TextureViewStreamControllerTest {
+    @Test
+    fun staleCompositionAcquiresNewestFrameWithoutBlankingTheView() {
+        val releases = mutableListOf<Int>()
+        val stream = TextureViewStreamController()
+        val token = Any()
+        val first = frame(1) { releases += 1 }
+        val second = frame(2) { releases += 2 }
+        stream.attachConsumer(token)
+        stream.submitFrame(first)
+        val composition = Snapshot.takeSnapshot()
+        try {
+            composition.enter { assertSame(first, stream.currentFrame.value) }
+            stream.submitFrame(second)
+            assertEquals(listOf(1), releases)
+            composition.enter {
+                assertSame(first, stream.currentFrame.value)
+                assertSame(second, stream.acquireLatestFrame(token))
+            }
+            stream.clear()
+            assertEquals(listOf(1), releases)
+            stream.releaseFrame(second)
+            assertEquals(listOf(1, 2), releases)
+        } finally {
+            composition.dispose()
+            stream.close()
+        }
+    }
+
+    @Test
+    fun staleCompositionSnapshotCannotAcquireOrRetainReplacedFrame() {
+        var releases = 0
+        val stream = TextureViewStreamController()
+        val token = Any()
+        val first = frame(1) { releases++ }
+        stream.attachConsumer(token)
+        stream.submitFrame(first)
+        assertTrue(stream.acquireFrame(token, first))
+        val composition = Snapshot.takeSnapshot()
+        try {
+            composition.enter { assertEquals(first, stream.currentFrame.value) }
+            stream.submitFrame(frame(2) {})
+            composition.enter {
+                assertEquals(first, stream.currentFrame.value)
+                assertFalse(stream.acquireFrame(token, first))
+                stream.releaseFrame(first)
+            }
+            assertEquals(1, releases)
+        } finally {
+            composition.dispose()
+            stream.close()
+        }
+    }
+
     @Test
     fun submittingNewFrameReleasesSkippedFrame() {
         val releases = mutableListOf<String>()

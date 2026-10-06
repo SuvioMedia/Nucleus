@@ -103,6 +103,7 @@ internal fun MacTextureView(
     filterQuality: FilterQuality,
     contentScale: ContentScale,
     alignment: Alignment,
+    imageRenderer: TextureViewImageRenderer?,
 ) {
     val host = LocalTaoMetalTextureHost.current
     if (Platform.Current != Platform.MacOS || host == null || !NativeTaoMacOsTextureBridge.isLoaded) {
@@ -141,7 +142,11 @@ internal fun MacTextureView(
             val stamp = controller?.frameStamp?.longValue ?: 0L
             val image =
                 imported.snapshot(controller, stamp, invalidateSnapshot) ?: return@drawBehind
-            drawExternalTexture(image, srcRect, contentScale, alignment, sampling, colorPaint)
+            if (imageRenderer == null) {
+                drawExternalTexture(image, srcRect, contentScale, alignment, sampling, colorPaint)
+            } else {
+                with(imageRenderer) { drawFrame(image, colorPaint?.colorFilter) }
+            }
         },
     )
 }

@@ -38,6 +38,7 @@ internal fun WindowsTextureView(
     filterQuality: FilterQuality,
     contentScale: ContentScale,
     alignment: Alignment,
+    imageRenderer: TextureViewImageRenderer?,
 ) {
     val host = LocalTaoWindowsTextureHost.current
     if (Platform.Current != Platform.Windows || host == null || !NativeTaoTextureBridge.isLoaded) {
@@ -85,7 +86,11 @@ internal fun WindowsTextureView(
                     host.requestRedraw()
                 }
             }
-            drawExternalTexture(imported.image, srcRect, contentScale, alignment, sampling, colorPaint)
+            if (imageRenderer == null) {
+                drawExternalTexture(imported.image, srcRect, contentScale, alignment, sampling, colorPaint)
+            } else {
+                with(imageRenderer) { drawFrame(imported.image, colorPaint?.colorFilter) }
+            }
         },
     )
 }
