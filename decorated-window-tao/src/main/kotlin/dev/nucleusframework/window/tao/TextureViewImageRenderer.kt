@@ -13,6 +13,7 @@ import org.jetbrains.skia.Image
  * Planar YUV sources are not supported by this hook.
  */
 public fun interface TextureViewImageRenderer {
+    /** Draws the borrowed [image] with the host's optional color conversion. */
     public fun DrawScope.drawFrame(
         image: Image,
         colorFilter: ColorFilter?,
