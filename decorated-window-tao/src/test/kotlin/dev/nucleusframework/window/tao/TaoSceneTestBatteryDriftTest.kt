@@ -60,6 +60,7 @@ class TaoSceneTestBatteryDriftTest {
             StandalonePopupRenderReentryTest::class.java,
             TaoWheelPinchZoomTest::class.java,
             TextureViewStreamControllerTest::class.java,
+            TextureViewStreamRendererTest::class.java,
             TaoWindowScrollTest::class.java,
             TaoWindowResizableTest::class.java,
             WindowWrapContentTest::class.java,

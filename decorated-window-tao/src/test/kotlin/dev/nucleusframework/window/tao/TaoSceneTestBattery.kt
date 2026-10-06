@@ -61,6 +61,15 @@ public object TaoSceneTestBattery {
             results += CaseResult(name, failure)
         }
 
+        run("TextureViewStreamControllerTest: staleCompositionAcquiresNewestFrameWithoutBlankingTheView") {
+            TextureViewStreamControllerTest().staleCompositionAcquiresNewestFrameWithoutBlankingTheView()
+        }
+        run("TextureViewStreamControllerTest: staleCompositionSnapshotCannotAcquireOrRetainReplacedFrame") {
+            TextureViewStreamControllerTest().staleCompositionSnapshotCannotAcquireOrRetainReplacedFrame()
+        }
+        run("TextureViewStreamRendererTest: switchingCustomRendererKeepsTheSameStreamConsumer") {
+            TextureViewStreamRendererTest().switchingCustomRendererKeepsTheSameStreamConsumer()
+        }
         run("TextureViewStreamControllerTest: submittingNewFrameReleasesSkippedFrame") {
             TextureViewStreamControllerTest().submittingNewFrameReleasesSkippedFrame()
         }
