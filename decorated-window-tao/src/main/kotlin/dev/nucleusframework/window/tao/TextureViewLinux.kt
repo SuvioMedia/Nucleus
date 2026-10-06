@@ -47,6 +47,7 @@ internal fun LinuxTextureView(
     filterQuality: FilterQuality,
     contentScale: ContentScale,
     alignment: Alignment,
+    imageRenderer: TextureViewImageRenderer?,
 ) {
     val host = LocalTaoGlTextureHost.current
     if (Platform.Current != Platform.Linux || host == null || !NativeTaoLinuxTextureBridge.isLoaded) {
@@ -75,7 +76,11 @@ internal fun LinuxTextureView(
             imported.onDrawPass(controller, stamp)
             val dst = externalTextureDstRect(imported.srcRect, contentScale, alignment)
             clipRect {
-                drawIntoCanvas { canvas -> imported.draw(canvas.skiaCanvas, dst, sampling, colorPaint) }
+                if (imageRenderer == null) {
+                    drawIntoCanvas { canvas -> imported.draw(canvas.skiaCanvas, dst, sampling, colorPaint) }
+                } else {
+                    with(imageRenderer) { drawFrame(imported.packedImage(), colorPaint?.colorFilter) }
+                }
             }
             if (controller != null) host.markTextureFrameSampled(controller)
         },
@@ -136,6 +141,11 @@ internal class LinuxImportedTexture(
         if (!frames.isPending(controller, stamp)) return
         frames.markConsumed(controller, stamp)
         controller.withAcquireFence { fd -> NativeTaoLinuxTextureBridge.nativeWaitFence(fd) }
+    }
+
+    fun packedImage(): Image {
+        check(painter == null) { "Custom image rendering requires a packed RGB texture." }
+        return planes.single().image
     }
 
     fun draw(

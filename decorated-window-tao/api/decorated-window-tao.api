@@ -974,6 +974,10 @@ public final class dev/nucleusframework/window/tao/TextureViewHostPresentationSt
 	public static fun values ()[Ldev/nucleusframework/window/tao/TextureViewHostPresentationState;
 }
 
+public abstract interface class dev/nucleusframework/window/tao/TextureViewImageRenderer {
+	public abstract fun drawFrame (Landroidx/compose/ui/graphics/drawscope/DrawScope;Lorg/jetbrains/skia/Image;Lorg/jetbrains/skia/ColorFilter;)V
+}
+
 public final class dev/nucleusframework/window/tao/TextureViewKt {
 	public static final fun TextureView-0ZWTemg (Ldev/nucleusframework/window/tao/TextureViewSource;Landroidx/compose/ui/Modifier;Ldev/nucleusframework/window/tao/TextureViewController;ILandroidx/compose/ui/layout/ContentScale;Landroidx/compose/ui/Alignment;Landroidx/compose/runtime/Composer;II)V
 	public static final fun nucleusD3D11SharedTextureSource (JII)Ldev/nucleusframework/window/tao/TextureViewSource;
@@ -1015,6 +1019,7 @@ public final class dev/nucleusframework/window/tao/TextureViewStreamController :
 }
 
 public final class dev/nucleusframework/window/tao/TextureViewStreamKt {
+	public static final fun TextureView-0ZWTemg (Ldev/nucleusframework/window/tao/TextureViewStreamController;Ldev/nucleusframework/window/tao/TextureViewImageRenderer;Landroidx/compose/ui/Modifier;ILandroidx/compose/ui/layout/ContentScale;Landroidx/compose/ui/Alignment;Landroidx/compose/runtime/Composer;II)V
 	public static final fun TextureView-RGgXEk8 (Ldev/nucleusframework/window/tao/TextureViewStreamController;Landroidx/compose/ui/Modifier;ILandroidx/compose/ui/layout/ContentScale;Landroidx/compose/ui/Alignment;Landroidx/compose/runtime/Composer;II)V
 	public static final fun rememberTextureViewStreamController (Landroidx/compose/runtime/Composer;I)Ldev/nucleusframework/window/tao/TextureViewStreamController;
 }

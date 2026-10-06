@@ -690,13 +690,29 @@ public fun TextureView(
     contentScale: ContentScale = ContentScale.FillBounds,
     alignment: Alignment = Alignment.Center,
 ) {
+    TextureViewContent(source, modifier, controller, filterQuality, contentScale, alignment, null)
+}
+
+@Composable
+internal fun TextureViewContent(
+    source: TextureViewSource?,
+    modifier: Modifier,
+    controller: TextureViewController?,
+    filterQuality: FilterQuality,
+    contentScale: ContentScale,
+    alignment: Alignment,
+    imageRenderer: TextureViewImageRenderer?,
+) {
+    require(imageRenderer == null || source !is YuvDmaBufTextureSource) {
+        "Custom TextureView image rendering requires a packed RGB source."
+    }
     when (source) {
         is D3D11SharedTextureSource ->
-            WindowsTextureView(source, modifier, controller, filterQuality, contentScale, alignment)
+            WindowsTextureView(source, modifier, controller, filterQuality, contentScale, alignment, imageRenderer)
         is IOSurfaceTextureSource, is MetalTextureSource ->
-            MacTextureView(source, modifier, controller, filterQuality, contentScale, alignment)
+            MacTextureView(source, modifier, controller, filterQuality, contentScale, alignment, imageRenderer)
         is DmaBufTextureSource, is EglImageTextureSource, is YuvDmaBufTextureSource ->
-            LinuxTextureView(source, modifier, controller, filterQuality, contentScale, alignment)
+            LinuxTextureView(source, modifier, controller, filterQuality, contentScale, alignment, imageRenderer)
         null -> Box(modifier)
     }
 }

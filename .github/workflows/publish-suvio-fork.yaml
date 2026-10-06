@@ -54,10 +54,11 @@ jobs:
             https://github.com/NucleusFramework/Nucleus.git \
             "refs/tags/v${upstream_version}"
           upstream_commit="$(git rev-parse 'FETCH_HEAD^{commit}')"
-          fork_commit_count="$(git rev-list --count "${upstream_commit}..${GITHUB_SHA}")"
-          fork_parent="$(git rev-parse "${GITHUB_SHA}^")"
-          if [[ "$fork_commit_count" != "1" || "$fork_parent" != "$upstream_commit" ]]; then
-            echo "::error::$GITHUB_SHA must be exactly one commit ahead of upstream v${upstream_version}"
+          # Keep patch releases on main without rewriting the fork's published history.
+          # The selected upstream tag must remain an ancestor of the reviewed source.
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]] ||
+             ! git merge-base --is-ancestor "$upstream_commit" "$GITHUB_SHA"; then
+            echo "::error::Release source must be main and descend from upstream v${upstream_version}"
             exit 1
           fi
 
