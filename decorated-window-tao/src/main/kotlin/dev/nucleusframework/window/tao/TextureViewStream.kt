@@ -282,11 +282,14 @@ public fun TextureView(
     TextureViewStreamContent(streamController, modifier, filterQuality, contentScale, alignment, null)
 }
 
-/** Draws a rotating packed RGB GPU buffer with a custom image shader. */
+/**
+ * Draws a rotating packed RGB GPU buffer with an optional custom image shader.
+ * Pass null for standard drawing while preserving the same stream consumer across mode changes.
+ */
 @Composable
 public fun TextureView(
     streamController: TextureViewStreamController,
-    imageRenderer: TextureViewImageRenderer,
+    imageRenderer: TextureViewImageRenderer?,
     modifier: Modifier = Modifier,
     filterQuality: FilterQuality = FilterQuality.Low,
     contentScale: ContentScale = ContentScale.FillBounds,
